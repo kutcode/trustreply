@@ -1,0 +1,30 @@
+# Dependencies
+venv/
+.codex-venv/
+__pycache__/
+*.pyc
+node_modules/
+.next/
+.pytest_cache/
+
+# Database
+*.db
+
+# Uploads & outputs
+backend/uploads/
+backend/outputs/
+
+# Environment
+.env
+.env.local
+
+# Local tooling
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

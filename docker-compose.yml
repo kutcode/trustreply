@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - QF_DATABASE_URL=sqlite+aiosqlite:///./questionnaire_filler.db
+      - QF_SIMILARITY_THRESHOLD=0.75
+      - QF_CORS_ORIGINS=["http://localhost:3000"]
+    volumes:
+      - backend-uploads:/app/uploads
+      - backend-outputs:/app/outputs
+      - backend-db:/app
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  backend-uploads:
+  backend-outputs:
+  backend-db:

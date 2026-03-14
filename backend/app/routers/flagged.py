@@ -1,0 +1,384 @@
+"""Flagged questions endpoints."""
+
+from __future__ import annotations
+import csv
+import datetime
+import io
+from collections import OrderedDict
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_db
+from app.models import FlaggedQuestion, ProcessingJob, QAPair
+from app.schemas import (
+    FlaggedQuestionResponse, FlaggedQuestionResolve,
+    FlaggedQuestionListResponse,
+    FlaggedSyncResponse,
+)
+from app.utils.embeddings import compute_embedding, embedding_to_bytes
+from app.utils.questions import clean_display_question, normalize_question_key
+from app.routers.qa import _require_category
+
+router = APIRouter(prefix="/api/flagged", tags=["flagged"])
+
+
+async def _load_duplicate_group(
+    db: AsyncSession,
+    question_text: str,
+    *,
+    resolved: bool | None = None,
+) -> list[FlaggedQuestion]:
+    """Fetch flagged questions that normalize to the same prompt."""
+
+    result = await db.execute(select(FlaggedQuestion))
+    items = result.scalars().all()
+
+    normalized = normalize_question_key(question_text)
+    matches = [
+        item for item in items
+        if normalize_question_key(item.extracted_question) == normalized
+        and (resolved is None or item.resolved == resolved)
+    ]
+    return matches
+
+
+async def _load_filenames_for_job_ids(db: AsyncSession, job_ids: list[int]) -> list[str]:
+    """Look up original filenames for a set of jobs."""
+
+    if not job_ids:
+        return []
+
+    result = await db.execute(
+        select(ProcessingJob.id, ProcessingJob.original_filename).where(ProcessingJob.id.in_(job_ids))
+    )
+    filename_map = {job_id: filename for job_id, filename in result.all()}
+    return [filename_map[job_id] for job_id in job_ids if job_id in filename_map]
+
+
+def _build_grouped_flagged_payload(rows: list[tuple[FlaggedQuestion, str]]) -> list[FlaggedQuestionResponse]:
+    """Collapse duplicate flagged questions into grouped response items."""
+
+    grouped: OrderedDict[str, dict] = OrderedDict()
+
+    for fq, filename in rows:
+        group_key = normalize_question_key(fq.extracted_question)
+        bucket = grouped.get(group_key)
+
+        if bucket is None:
+            bucket = {
+                "id": fq.id,
+                "extracted_question": clean_display_question(fq.extracted_question),
+                "normalized_question": group_key,
+                "context": fq.context,
+                "similarity_score": fq.similarity_score,
+                "best_match_question": fq.best_match_question,
+                "resolved": fq.resolved,
+                "resolved_answer": fq.resolved_answer,
+                "resolved_at": fq.resolved_at,
+                "created_at": fq.created_at,
+                "occurrence_count": 0,
+                "job_ids": [],
+                "filenames": [],
+            }
+            grouped[group_key] = bucket
+
+        bucket["occurrence_count"] += 1
+
+        if fq.job_id not in bucket["job_ids"]:
+            bucket["job_ids"].append(fq.job_id)
+        if filename not in bucket["filenames"]:
+            bucket["filenames"].append(filename)
+
+        bucket["resolved"] = bucket["resolved"] and fq.resolved
+
+        if fq.created_at > bucket["created_at"]:
+            bucket["id"] = fq.id
+            bucket["context"] = fq.context
+            bucket["similarity_score"] = fq.similarity_score
+            bucket["best_match_question"] = fq.best_match_question
+            bucket["resolved"] = fq.resolved
+            bucket["resolved_answer"] = fq.resolved_answer
+            bucket["resolved_at"] = fq.resolved_at
+            bucket["created_at"] = fq.created_at
+            bucket["extracted_question"] = clean_display_question(fq.extracted_question)
+
+    return [FlaggedQuestionResponse(**payload) for payload in grouped.values()]
+
+
+async def _sync_unresolved_flagged_with_knowledge_base(
+    db: AsyncSession,
+    *,
+    job_id: int | None = None,
+) -> FlaggedSyncResponse:
+    """Resolve unresolved flagged questions that now exist in the knowledge base."""
+
+    unresolved_query = select(FlaggedQuestion).where(FlaggedQuestion.resolved.is_(False))
+    if job_id is not None:
+        unresolved_query = unresolved_query.where(FlaggedQuestion.job_id == job_id)
+
+    unresolved_result = await db.execute(unresolved_query.order_by(FlaggedQuestion.created_at.asc()))
+    unresolved_flags = unresolved_result.scalars().all()
+
+    qa_result = await db.execute(
+        select(QAPair).order_by(QAPair.updated_at.desc(), QAPair.id.desc())
+    )
+    qa_pairs = qa_result.scalars().all()
+
+    qa_lookup: dict[str, QAPair] = {}
+    for qa in qa_pairs:
+        key = normalize_question_key(qa.question)
+        if key not in qa_lookup:
+            qa_lookup[key] = qa
+
+    synced_occurrences = 0
+    synced_groups: set[str] = set()
+    resolved_at = datetime.datetime.utcnow()
+
+    for flagged_question in unresolved_flags:
+        key = normalize_question_key(flagged_question.extracted_question)
+        qa = qa_lookup.get(key)
+        if qa is None:
+            continue
+
+        flagged_question.resolved = True
+        flagged_question.resolved_answer = qa.answer
+        flagged_question.resolved_at = resolved_at
+        synced_occurrences += 1
+        synced_groups.add(key)
+
+    if synced_occurrences > 0:
+        await db.commit()
+
+    remaining_result = await db.execute(
+        select(FlaggedQuestion).where(
+            FlaggedQuestion.resolved.is_(False),
+            *( [FlaggedQuestion.job_id == job_id] if job_id is not None else [] ),
+        )
+    )
+    remaining_unresolved = len(remaining_result.scalars().all())
+
+    return FlaggedSyncResponse(
+        scanned_occurrences=len(unresolved_flags),
+        synced_occurrences=synced_occurrences,
+        synced_groups=len(synced_groups),
+        remaining_unresolved=remaining_unresolved,
+    )
+
+
+async def _query_grouped_flagged(
+    db: AsyncSession,
+    *,
+    resolved: bool | None = None,
+    job_id: int | None = None,
+) -> list[FlaggedQuestionResponse]:
+    """Load grouped flagged questions with the same filters used by the list endpoint."""
+
+    query = select(FlaggedQuestion, ProcessingJob.original_filename).join(
+        ProcessingJob,
+        ProcessingJob.id == FlaggedQuestion.job_id,
+    )
+
+    if resolved is not None:
+        query = query.where(FlaggedQuestion.resolved == resolved)
+    if job_id is not None:
+        query = query.where(FlaggedQuestion.job_id == job_id)
+
+    query = query.order_by(FlaggedQuestion.created_at.desc())
+
+    result = await db.execute(query)
+    rows = result.all()
+    return _build_grouped_flagged_payload(rows)
+
+
+@router.get("", response_model=FlaggedQuestionListResponse)
+async def list_flagged(
+    resolved: bool | None = Query(None, description="Filter: true=resolved, false=unresolved, none=all"),
+    job_id: int | None = Query(None, description="Filter by job ID"),
+    db: AsyncSession = Depends(get_db),
+):
+    """List flagged questions."""
+    items = await _query_grouped_flagged(db, resolved=resolved, job_id=job_id)
+
+    return FlaggedQuestionListResponse(items=items, total=len(items))
+
+
+@router.get("/export")
+async def export_flagged_csv(
+    resolved: bool | None = Query(False, description="Export unresolved by default; set true or omit for other views"),
+    job_id: int | None = Query(None, description="Filter by job ID"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Export grouped flagged questions as an import-ready CSV template."""
+
+    items = await _query_grouped_flagged(db, resolved=resolved, job_id=job_id)
+
+    output = io.StringIO()
+    writer = csv.DictWriter(
+        output,
+        fieldnames=["category", "question", "answer"],
+    )
+    writer.writeheader()
+
+    for item in items:
+        answer = ""
+        if item.resolved and item.resolved_answer and item.resolved_answer != "[Dismissed]":
+            answer = item.resolved_answer
+
+        writer.writerow(
+            {
+                "category": "",
+                "question": item.extracted_question,
+                "answer": answer,
+            }
+        )
+
+    suffix = "all" if resolved is None else "resolved" if resolved else "unresolved"
+    filename = f"flagged_questions_{suffix}.csv"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return Response(content=output.getvalue(), media_type="text/csv; charset=utf-8", headers=headers)
+
+
+@router.post("/sync", response_model=FlaggedSyncResponse)
+async def sync_flagged_questions(
+    job_id: int | None = Query(None, description="Optionally sync only a single job's flagged questions"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sync unresolved flagged questions against the current knowledge base."""
+
+    return await _sync_unresolved_flagged_with_knowledge_base(db, job_id=job_id)
+
+
+@router.get("/{flag_id}", response_model=FlaggedQuestionResponse)
+async def get_flagged(flag_id: int, db: AsyncSession = Depends(get_db)):
+    """Get a single flagged question."""
+    fq = await db.get(FlaggedQuestion, flag_id)
+    if not fq:
+        raise HTTPException(status_code=404, detail="Flagged question not found")
+    job = await db.get(ProcessingJob, fq.job_id)
+    return FlaggedQuestionResponse(
+        id=fq.id,
+        extracted_question=clean_display_question(fq.extracted_question),
+        normalized_question=normalize_question_key(fq.extracted_question),
+        context=fq.context,
+        similarity_score=fq.similarity_score,
+        best_match_question=fq.best_match_question,
+        resolved=fq.resolved,
+        resolved_answer=fq.resolved_answer,
+        resolved_at=fq.resolved_at,
+        created_at=fq.created_at,
+        occurrence_count=1,
+        job_ids=[fq.job_id],
+        filenames=[job.original_filename] if job else [],
+    )
+
+
+@router.post("/{flag_id}/resolve", response_model=FlaggedQuestionResponse)
+async def resolve_flagged(
+    flag_id: int,
+    data: FlaggedQuestionResolve,
+    db: AsyncSession = Depends(get_db),
+):
+    """Resolve a flagged question by providing an answer.
+
+    Optionally adds the Q&A pair to the knowledge base.
+    """
+    fq = await db.get(FlaggedQuestion, flag_id)
+    if not fq:
+        raise HTTPException(status_code=404, detail="Flagged question not found")
+    duplicates = await _load_duplicate_group(db, fq.extracted_question, resolved=False)
+    if not duplicates:
+        raise HTTPException(status_code=400, detail="Already resolved")
+
+    resolved_at = datetime.datetime.utcnow()
+    unique_questions = []
+    seen_questions: set[str] = set()
+    for duplicate in duplicates:
+        duplicate.resolved = True
+        duplicate.resolved_answer = data.answer
+        duplicate.resolved_at = resolved_at
+
+        if duplicate.extracted_question not in seen_questions:
+            unique_questions.append(duplicate.extracted_question)
+            seen_questions.add(duplicate.extracted_question)
+
+    # Optionally add to knowledge base
+    if data.add_to_knowledge_base:
+        category = _require_category(data.category)
+        existing_result = await db.execute(select(QAPair.question))
+        existing_questions = {row[0] for row in existing_result.all()}
+
+        for question in unique_questions:
+            if question in existing_questions:
+                continue
+
+            embedding = compute_embedding(question)
+            qa = QAPair(
+                category=category,
+                question=question,
+                answer=data.answer,
+                embedding=embedding_to_bytes(embedding),
+            )
+            db.add(qa)
+            existing_questions.add(question)
+
+    await db.commit()
+    await db.refresh(fq)
+    job_ids = sorted({duplicate.job_id for duplicate in duplicates})
+    filenames = await _load_filenames_for_job_ids(db, job_ids)
+    return FlaggedQuestionResponse(
+        id=fq.id,
+        extracted_question=clean_display_question(fq.extracted_question),
+        normalized_question=normalize_question_key(fq.extracted_question),
+        context=fq.context,
+        similarity_score=fq.similarity_score,
+        best_match_question=fq.best_match_question,
+        resolved=fq.resolved,
+        resolved_answer=fq.resolved_answer,
+        resolved_at=fq.resolved_at,
+        created_at=fq.created_at,
+        occurrence_count=len(duplicates),
+        job_ids=job_ids,
+        filenames=filenames,
+    )
+
+
+@router.post("/{flag_id}/dismiss", response_model=FlaggedQuestionResponse)
+async def dismiss_flagged(
+    flag_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Dismiss a flagged question (mark resolved without adding to KB)."""
+    fq = await db.get(FlaggedQuestion, flag_id)
+    if not fq:
+        raise HTTPException(status_code=404, detail="Flagged question not found")
+    duplicates = await _load_duplicate_group(db, fq.extracted_question, resolved=False)
+    if not duplicates:
+        raise HTTPException(status_code=400, detail="Already resolved")
+
+    dismissed_at = datetime.datetime.utcnow()
+    for duplicate in duplicates:
+        duplicate.resolved = True
+        duplicate.resolved_at = dismissed_at
+        duplicate.resolved_answer = "[Dismissed]"
+
+    await db.commit()
+    await db.refresh(fq)
+    job_ids = sorted({duplicate.job_id for duplicate in duplicates})
+    filenames = await _load_filenames_for_job_ids(db, job_ids)
+    return FlaggedQuestionResponse(
+        id=fq.id,
+        extracted_question=clean_display_question(fq.extracted_question),
+        normalized_question=normalize_question_key(fq.extracted_question),
+        context=fq.context,
+        similarity_score=fq.similarity_score,
+        best_match_question=fq.best_match_question,
+        resolved=fq.resolved,
+        resolved_answer=fq.resolved_answer,
+        resolved_at=fq.resolved_at,
+        created_at=fq.created_at,
+        occurrence_count=len(duplicates),
+        job_ids=job_ids,
+        filenames=filenames,
+    )
