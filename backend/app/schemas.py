@@ -102,6 +102,18 @@ class FlaggedQuestionResolve(BaseModel):
     category: str | None = None
 
 
+class FlaggedBulkDismissRequest(BaseModel):
+    ids: list[int] = Field(..., min_length=1, max_length=1000)
+
+
+class FlaggedBulkDismissResponse(BaseModel):
+    requested_ids: int
+    dismissed_groups: int
+    dismissed_occurrences: int
+    already_resolved_groups: int
+    not_found_ids: list[int] = Field(default_factory=list)
+
+
 class FlaggedQuestionListResponse(BaseModel):
     items: list[FlaggedQuestionResponse]
     total: int
@@ -142,6 +154,22 @@ class AppSettingsUpdate(BaseModel):
     agent_max_questions_per_call: int | None = Field(None, ge=1, le=100)
     similarity_threshold: float | None = Field(None, ge=0.0, le=1.0)
     default_parser_profile: str | None = None
+
+
+class AgentModelsRequest(BaseModel):
+    provider: str | None = None
+    api_base: str | None = None
+    api_key: str | None = None
+
+
+class AgentModelOption(BaseModel):
+    id: str
+    label: str
+
+
+class AgentModelsResponse(BaseModel):
+    provider: str
+    models: list[AgentModelOption]
 
 
 # ── Troubleshooting ────────────────────────────────────────────────

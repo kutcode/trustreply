@@ -98,6 +98,12 @@ def parse_pdf_result(file_path: Path, options: ParseOptions | None = None) -> Pa
     return HeuristicParser().parse_pdf(file_path, options)
 
 
+def parse_csv_result(file_path: Path, options: ParseOptions | None = None) -> ParseResult:
+    """Parse a CSV file and return extracted items with parser diagnostics."""
+
+    return HeuristicParser().parse_csv(file_path, options)
+
+
 def parse_document_result(file_path: Path, options: ParseOptions | None = None) -> ParseResult:
     """Parse any supported document and return a structured parse result."""
 
@@ -114,6 +120,12 @@ def parse_pdf(file_path: Path, options: ParseOptions | None = None) -> list[Extr
     """Backward-compatible PDF parser that returns extracted items only."""
 
     return parse_pdf_result(file_path, options).items
+
+
+def parse_csv(file_path: Path, options: ParseOptions | None = None) -> list[ExtractedItem]:
+    """Backward-compatible CSV parser that returns extracted items only."""
+
+    return parse_csv_result(file_path, options).items
 
 
 def parse_document(file_path: Path, options: ParseOptions | None = None) -> list[ExtractedItem]:

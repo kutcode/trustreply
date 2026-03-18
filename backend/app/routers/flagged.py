@@ -15,6 +15,8 @@ from app.models import FlaggedQuestion, ProcessingJob, QAPair
 from app.schemas import (
     FlaggedQuestionResponse, FlaggedQuestionResolve,
     FlaggedQuestionListResponse,
+    FlaggedBulkDismissRequest,
+    FlaggedBulkDismissResponse,
     FlaggedSyncResponse,
 )
 from app.utils.embeddings import compute_embedding, embedding_to_bytes
@@ -381,4 +383,61 @@ async def dismiss_flagged(
         occurrence_count=len(duplicates),
         job_ids=job_ids,
         filenames=filenames,
+    )
+
+
+@router.post("/dismiss-bulk", response_model=FlaggedBulkDismissResponse)
+async def dismiss_flagged_bulk(
+    data: FlaggedBulkDismissRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Dismiss multiple grouped flagged questions in one request."""
+
+    unique_ids = sorted(set(data.ids))
+    if not unique_ids:
+        raise HTTPException(status_code=400, detail="No flagged question ids provided")
+
+    result = await db.execute(select(FlaggedQuestion).where(FlaggedQuestion.id.in_(unique_ids)))
+    found_items = result.scalars().all()
+    found_by_id = {item.id: item for item in found_items}
+    not_found_ids = [item_id for item_id in unique_ids if item_id not in found_by_id]
+
+    dismissed_at = datetime.datetime.utcnow()
+    dismissed_groups = 0
+    dismissed_occurrences = 0
+    already_resolved_groups = 0
+    processed_groups: set[str] = set()
+
+    for item_id in unique_ids:
+        flagged_item = found_by_id.get(item_id)
+        if flagged_item is None:
+            continue
+
+        group_key = normalize_question_key(flagged_item.extracted_question)
+        if group_key in processed_groups:
+            continue
+        processed_groups.add(group_key)
+
+        duplicates = await _load_duplicate_group(db, flagged_item.extracted_question, resolved=False)
+        if not duplicates:
+            already_resolved_groups += 1
+            continue
+
+        for duplicate in duplicates:
+            duplicate.resolved = True
+            duplicate.resolved_at = dismissed_at
+            duplicate.resolved_answer = "[Dismissed]"
+
+        dismissed_groups += 1
+        dismissed_occurrences += len(duplicates)
+
+    if dismissed_occurrences > 0:
+        await db.commit()
+
+    return FlaggedBulkDismissResponse(
+        requested_ids=len(unique_ids),
+        dismissed_groups=dismissed_groups,
+        dismissed_occurrences=dismissed_occurrences,
+        already_resolved_groups=already_resolved_groups,
+        not_found_ids=not_found_ids,
     )

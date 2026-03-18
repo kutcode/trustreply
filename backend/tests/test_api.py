@@ -33,6 +33,31 @@ async def test_get_settings(client):
     assert isinstance(data["agent_modes"], list)
 
 
+async def test_list_agent_models_requires_api_key(client):
+    res = await client.post(
+        "/api/settings/models",
+        json={
+            "provider": "openai",
+            "api_base": "https://api.openai.com/v1",
+        },
+    )
+    assert res.status_code == 400
+    assert "API key is required" in res.json()["detail"]
+
+
+async def test_list_agent_models_rejects_unknown_provider(client):
+    res = await client.post(
+        "/api/settings/models",
+        json={
+            "provider": "unknown-provider",
+            "api_base": "https://example.com",
+            "api_key": "dummy",
+        },
+    )
+    assert res.status_code == 400
+    assert "Unsupported provider" in res.json()["detail"]
+
+
 # ── Q&A CRUD ──────────────────────────────────────────────────────
 
 async def test_list_qa_pairs_empty(client):
@@ -170,6 +195,33 @@ async def test_import_csv_with_errors(client):
     assert "missing category, question, or answer" in data["errors"][0]
 
 
+async def test_import_csv_accepts_bom_and_header_case_variants(client):
+    csv_content = "\ufeffCategory,Question,Answer\nSecurity,Do you encrypt data at rest?,Yes"
+    files = {"file": ("import.csv", csv_content.encode("utf-8"), "text/csv")}
+    res = await client.post("/api/qa/import", files=files)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["imported"] == 1
+    assert data["total_rows"] == 1
+
+
+async def test_import_json_skips_null_fields(client):
+    json_content = json.dumps(
+        [
+            {"category": "General", "question": "Valid question?", "answer": "Valid answer"},
+            {"category": "General", "question": "Missing answer?", "answer": None},
+        ]
+    )
+    files = {"file": ("import.json", json_content.encode(), "application/json")}
+    res = await client.post("/api/qa/import", files=files)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["imported"] == 1
+    assert data["total_rows"] == 2
+    assert len(data["errors"]) == 1
+    assert "missing category, question, or answer" in data["errors"][0]
+
+
 # ── Upload & Jobs ─────────────────────────────────────────────────
 
 async def test_upload_invalid_type(client):
@@ -193,8 +245,8 @@ async def test_upload_invalid_agent_mode(client, make_docx):
     with open(path, "rb") as f:
         files = {"file": ("questionnaire.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
         res = await client.post("/api/upload", files=files, data={"agent_mode": "invalid-mode"})
-    assert res.status_code == 200
-    assert res.json()["agent_mode"] == "off"
+    assert res.status_code == 400
+    assert "Unknown agent mode" in res.json()["detail"]
 
 
 async def test_upload_agent_mode_requires_config(client, make_docx):
@@ -247,7 +299,7 @@ async def test_upload_docx_creates_job(client, make_docx):
     assert data["status"] == "pending"
     assert data["original_filename"] == "questionnaire.docx"
     assert data["parser_profile_name"] == "default"
-    assert data["agent_mode"] == "off"
+    assert data["agent_mode"] == "agent"
     assert data["batch_id"] is None
     assert "id" in data
 
@@ -344,7 +396,12 @@ async def test_troubleshoot_agent_analysis_skipped_when_unconfigured(client, mak
 
     assert res.status_code == 200
     data = res.json()
-    assert data["agent_analysis"] is None
+    assert isinstance(data["agent_analysis"], dict)
+    assert data["agent_analysis"]["status"] == "skipped"
+    fix_plan = data["agent_analysis"].get("fix_plan")
+    assert isinstance(fix_plan, dict)
+    assert fix_plan["can_auto_apply"] is False
+    assert fix_plan["action"] == "manual_follow_up"
 
 
 async def test_bulk_upload_creates_grouped_jobs(client, make_docx):
@@ -573,6 +630,72 @@ async def test_resolve_flagged_resolves_duplicate_group(client, db_session):
     assert second_flag.resolved is True
     assert first_flag.resolved_answer == "We maintain a documented recovery plan."
     assert second_flag.resolved_answer == "We maintain a documented recovery plan."
+
+
+async def test_bulk_dismiss_flagged_resolves_selected_groups(client, db_session):
+    first_job = ProcessingJob(
+        original_filename="first.docx",
+        stored_filename="first_stored.docx",
+        status="done",
+    )
+    second_job = ProcessingJob(
+        original_filename="second.docx",
+        stored_filename="second_stored.docx",
+        status="done",
+    )
+    third_job = ProcessingJob(
+        original_filename="third.docx",
+        stored_filename="third_stored.docx",
+        status="done",
+    )
+    db_session.add_all([first_job, second_job, third_job])
+    await db_session.commit()
+    await db_session.refresh(first_job)
+    await db_session.refresh(second_job)
+    await db_session.refresh(third_job)
+
+    group_a_first = FlaggedQuestion(
+        job_id=first_job.id,
+        extracted_question="Describe your disaster recovery plan.",
+        resolved=False,
+    )
+    group_a_second = FlaggedQuestion(
+        job_id=second_job.id,
+        extracted_question="1. Describe your disaster recovery plan.",
+        resolved=False,
+    )
+    group_b = FlaggedQuestion(
+        job_id=third_job.id,
+        extracted_question="Do you encrypt data in transit?",
+        resolved=False,
+    )
+    db_session.add_all([group_a_first, group_a_second, group_b])
+    await db_session.commit()
+    await db_session.refresh(group_a_first)
+    await db_session.refresh(group_a_second)
+    await db_session.refresh(group_b)
+
+    res = await client.post(
+        "/api/flagged/dismiss-bulk",
+        json={"ids": [group_a_first.id, group_b.id, 999999]},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["requested_ids"] == 3
+    assert data["dismissed_groups"] == 2
+    assert data["dismissed_occurrences"] == 3
+    assert data["already_resolved_groups"] == 0
+    assert 999999 in data["not_found_ids"]
+
+    await db_session.refresh(group_a_first)
+    await db_session.refresh(group_a_second)
+    await db_session.refresh(group_b)
+    assert group_a_first.resolved is True
+    assert group_a_second.resolved is True
+    assert group_b.resolved is True
+    assert group_a_first.resolved_answer == "[Dismissed]"
+    assert group_a_second.resolved_answer == "[Dismissed]"
+    assert group_b.resolved_answer == "[Dismissed]"
 
 
 async def test_sync_flagged_resolves_questions_now_in_knowledge_base(client, db_session):

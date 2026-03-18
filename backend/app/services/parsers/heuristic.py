@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import re
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from docx.text.run import Run
 
 from app.services.parsers.base import BaseParser
 from app.services.parsers.types import ExtractedItem, ParseOptions, ParseResult, RunFormat
+from app.utils.csv_files import read_csv_rows
 
 
 # Patterns that indicate a line is likely a question
@@ -22,6 +24,13 @@ QUESTION_PATTERNS = [
         r"^(please\s+)?(describe|explain|provide|list|detail|specify|state|outline|indicate|confirm|identify)",
         re.IGNORECASE,
     ),
+]
+
+# Instructions/headings that look like prompts but are not answerable questions.
+NON_QUESTION_PATTERNS = [
+    re.compile(r"\bplease\s+provide\s+detailed\s+responses?\s+to\s+(each|all)\s+questions?\s+below\b", re.IGNORECASE),
+    re.compile(r"\bdetailed\s+responses?\s+required\b", re.IGNORECASE),
+    re.compile(r"\bdetailed\s+assessment\s+with\s+verbose\s+questions\b", re.IGNORECASE),
 ]
 
 # Common questionnaire labels that precede an answer area
@@ -56,6 +65,9 @@ def _is_question(text: str, min_question_length: int = DEFAULT_MIN_QUESTION_LENG
     text = text.strip()
     if len(text) < min_question_length:
         return False
+    for pattern in NON_QUESTION_PATTERNS:
+        if pattern.search(text):
+            return False
     for pattern in QUESTION_PATTERNS:
         if pattern.search(text):
             return True
@@ -89,7 +101,7 @@ def _score_parse_confidence(stats: dict[str, int], items: list[ExtractedItem]) -
     if not items:
         return 0.0
 
-    table_items = stats.get("table_items", 0) + stats.get("pdf_table_items", 0)
+    table_items = stats.get("table_items", 0) + stats.get("pdf_table_items", 0) + stats.get("csv_items", 0)
     paragraph_items = stats.get("paragraph_items", 0) + stats.get("pdf_text_items", 0)
 
     if table_items and paragraph_items:
@@ -105,8 +117,12 @@ def _fallback_decision(stats: dict[str, int], confidence: float) -> tuple[bool, 
     """Recommend fallback when heuristic extraction looks weak."""
 
     items_total = stats.get("items_total", 0)
-    table_rows = stats.get("table_rows_scanned", 0) + stats.get("pdf_table_rows_scanned", 0)
-    table_items = stats.get("table_items", 0) + stats.get("pdf_table_items", 0)
+    table_rows = (
+        stats.get("table_rows_scanned", 0)
+        + stats.get("pdf_table_rows_scanned", 0)
+        + stats.get("csv_rows_scanned", 0)
+    )
+    table_items = stats.get("table_items", 0) + stats.get("pdf_table_items", 0) + stats.get("csv_items", 0)
 
     if items_total == 0:
         return True, "no_questions_found"
@@ -235,7 +251,9 @@ class HeuristicParser(BaseParser):
             return self.parse_docx(file_path, options)
         if suffix == ".pdf":
             return self.parse_pdf(file_path, options)
-        raise ValueError(f"Unsupported file type: {suffix}. Supported: .docx, .pdf")
+        if suffix == ".csv":
+            return self.parse_csv(file_path, options)
+        raise ValueError(f"Unsupported file type: {suffix}. Supported: .docx, .pdf, .csv")
 
     def parse_docx(self, file_path: Path, options: ParseOptions | None = None) -> ParseResult:
         options = options or ParseOptions()
@@ -318,7 +336,7 @@ class HeuristicParser(BaseParser):
                         if not q_text or len(q_text) < options.min_question_length:
                             continue
 
-                        if len(a_text) < 3 or _is_question(q_text, options.min_question_length):
+                        if _is_question(q_text, options.min_question_length):
                             items.append(
                                 ExtractedItem(
                                     question_text=q_text,
@@ -380,6 +398,23 @@ class HeuristicParser(BaseParser):
             fallback_reason=fallback_reason,
         )
 
+    def parse_csv(self, file_path: Path, options: ParseOptions | None = None) -> ParseResult:
+        options = options or ParseOptions()
+        rows, _csv_format = read_csv_rows(file_path)
+        items, stats = self._parse_csv_rows(rows, options)
+        confidence = _score_parse_confidence(stats, items)
+        fallback_recommended, fallback_reason = _fallback_decision(stats, confidence)
+
+        return ParseResult(
+            items=items,
+            confidence=confidence,
+            stats=stats,
+            profile_name=options.profile_name,
+            parser_strategy=self.strategy_name,
+            fallback_recommended=fallback_recommended,
+            fallback_reason=fallback_reason,
+        )
+
     def _parse_docx_tables(
         self,
         doc: DocxDocument,
@@ -411,7 +446,7 @@ class HeuristicParser(BaseParser):
                     continue
 
                 a_text = a_cell.text.strip()
-                if len(a_text) < 3 or _is_question(q_text, options.min_question_length):
+                if _is_question(q_text, options.min_question_length):
                     answer_row_idx = r_idx
                     answer_col_idx = a_col_idx
                     answer_cell = a_cell
@@ -512,4 +547,69 @@ class HeuristicParser(BaseParser):
                 )
                 stats["paragraph_items"] += 1
 
+        return items, stats
+
+    def _parse_csv_rows(
+        self,
+        rows: list[list[str]],
+        options: ParseOptions,
+    ) -> tuple[list[ExtractedItem], dict[str, int]]:
+        items: list[ExtractedItem] = []
+        stats = {"csv_rows_scanned": len(rows), "csv_items": 0, "items_total": 0}
+
+        non_empty_rows = [row for row in rows if any(cell.strip() for cell in row)]
+        if not non_empty_rows:
+            return items, stats
+
+        q_col_idx, a_col_idx, header_rows = _infer_table_mapping(non_empty_rows, options)
+        seen_non_empty_rows = 0
+
+        for r_idx, row in enumerate(rows):
+            if not any(cell.strip() for cell in row):
+                continue
+
+            if seen_non_empty_rows < header_rows:
+                seen_non_empty_rows += 1
+                continue
+
+            max_idx = max(q_col_idx, a_col_idx)
+            if len(row) <= max_idx:
+                seen_non_empty_rows += 1
+                continue
+            if not options.allow_additional_columns and len(row) > max_idx + 1:
+                seen_non_empty_rows += 1
+                continue
+
+            q_text = (row[q_col_idx] or "").strip()
+            a_text = (row[a_col_idx] or "").strip()
+
+            if not q_text or len(q_text) < options.min_question_length:
+                seen_non_empty_rows += 1
+                continue
+
+            if _is_question(q_text, options.min_question_length):
+                items.append(
+                    ExtractedItem(
+                        question_text=q_text,
+                        item_type="csv_row",
+                        location={
+                            "row_idx": r_idx,
+                            "q_col_idx": q_col_idx,
+                            "a_col_idx": a_col_idx,
+                            "question_col_idx": q_col_idx,
+                            "answer_col_idx": a_col_idx,
+                            "column_count": len(row),
+                            "header_rows": header_rows,
+                        },
+                        source_block_id=f"csv-row-{r_idx}-q{q_col_idx}-a{a_col_idx}",
+                        confidence=0.88,
+                        parser_strategy=self.strategy_name,
+                        raw_text=q_text,
+                    )
+                )
+                stats["csv_items"] += 1
+
+            seen_non_empty_rows += 1
+
+        stats["items_total"] = len(items)
         return items, stats

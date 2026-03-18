@@ -45,6 +45,12 @@ class ProcessingJob(Base):
     parse_stats = Column(JSON, nullable=True)
     fallback_recommended = Column(Boolean, default=False)
     fallback_reason = Column(String(100), nullable=True)
+    agent_mode = Column(String(32), nullable=True)
+    agent_status = Column(String(32), nullable=True)
+    agent_summary = Column(Text, nullable=True)
+    agent_trace = Column(JSON, nullable=True)
+    agent_error = Column(Text, nullable=True)
+    agent_model = Column(String(128), nullable=True)
     uploaded_at = Column(DateTime, default=datetime.datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
 

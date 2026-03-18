@@ -1,11 +1,11 @@
 """Upload & processing job endpoints."""
 
 from __future__ import annotations
-import asyncio
 import datetime
 import uuid
 import zipfile
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks, Form
 from sqlalchemy import select
@@ -22,11 +22,101 @@ from app.services.parser import (
     parse_document_result,
 )
 from app.services.matcher import match_questions
-from app.services.generator import generate_filled_docx, generate_docx_from_pdf_items
+from app.services.generator import generate_filled_csv, generate_filled_docx, generate_docx_from_pdf_items
+from app.services.agent import (
+    AGENT_MODE_OFF,
+    AgentRuntimeConfig,
+    append_trace,
+    is_agent_available,
+    normalize_agent_mode,
+    run_contextual_fill_agent,
+    run_troubleshoot_agent,
+)
+from app.utils.questions import normalize_question_key
 
 router = APIRouter(prefix="/api", tags=["upload"])
 
-ALLOWED_EXTENSIONS = {".docx", ".pdf"}
+ALLOWED_EXTENSIONS = {".docx", ".pdf", ".csv"}
+
+
+def _clean_optional_form_value(value: str | None) -> str | None:
+    """Normalize optional form values and collapse blanks to None."""
+
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _build_runtime_agent_config(
+    *,
+    agent_provider: str | None = None,
+    agent_api_base: str | None = None,
+    agent_api_key: str | None = None,
+    agent_model: str | None = None,
+) -> AgentRuntimeConfig | None:
+    """Build an optional per-request agent configuration override."""
+
+    provider = _clean_optional_form_value(agent_provider)
+    api_base = _clean_optional_form_value(agent_api_base)
+    api_key = _clean_optional_form_value(agent_api_key)
+    model = _clean_optional_form_value(agent_model)
+
+    has_override = any(value is not None for value in (provider, api_base, api_key, model))
+    if not has_override:
+        return None
+
+    missing = []
+    if not api_base:
+        missing.append("agent_api_base")
+    if not api_key:
+        missing.append("agent_api_key")
+    if not model:
+        missing.append("agent_model")
+    if missing:
+        missing_fields = ", ".join(missing)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Custom agent configuration is incomplete. Missing: {missing_fields}. "
+                "Provide all three fields when overriding provider settings."
+            ),
+        )
+
+    return AgentRuntimeConfig(
+        api_base=api_base,
+        api_key=api_key,
+        model=model,
+        provider=provider or "openai-compatible",
+    )
+
+
+def _output_file_spec(original_filename: str, source_suffix: str) -> tuple[str, str]:
+    """Return the final downloadable filename and media type for a processed job."""
+
+    stem = Path(original_filename).stem
+    if source_suffix == ".pdf":
+        return (
+            f"filled_{uuid.uuid4().hex[:8]}_{stem}.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+    if source_suffix == ".csv":
+        return (f"filled_{uuid.uuid4().hex[:8]}_{stem}.csv", "text/csv")
+    return (
+        f"filled_{uuid.uuid4().hex[:8]}_{stem}.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
+def _media_type_for_path(path: Path) -> str:
+    """Map output suffixes to download media types."""
+
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        return "text/csv"
+    if suffix == ".docx":
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    return "application/octet-stream"
 
 
 def _validate_upload_file(file: UploadFile) -> str:
@@ -49,6 +139,8 @@ async def _create_processing_job(
     file: UploadFile,
     suffix: str,
     parser_profile: str | None,
+    agent_mode: str,
+    agent_model: str | None,
     db: AsyncSession,
     batch_id: str | None = None,
 ) -> ProcessingJob:
@@ -66,6 +158,10 @@ async def _create_processing_job(
         stored_filename=stored_name,
         status="pending",
         parser_profile_name=parser_profile or settings.default_parser_profile,
+        agent_mode=agent_mode,
+        agent_status="pending" if agent_mode != AGENT_MODE_OFF else "disabled",
+        agent_model=agent_model if agent_mode != AGENT_MODE_OFF else None,
+        agent_trace=[],
     )
     db.add(job)
     return job
@@ -75,6 +171,49 @@ def _build_batch_response(batch_id: str, jobs: list[ProcessingJob]) -> JobBatchR
     """Serialize a grouped upload result."""
 
     return JobBatchResponse(batch_id=batch_id, items=jobs, total=len(jobs))
+
+
+def _append_job_trace(
+    job: ProcessingJob,
+    *,
+    step: str,
+    status: str,
+    message: str,
+    data: dict[str, Any] | None = None,
+) -> None:
+    """Append a structured trace event to the job."""
+
+    trace = list(job.agent_trace or [])
+    append_trace(trace, step=step, status=status, message=message, data=data)
+    job.agent_trace = trace
+
+
+def _rebuild_flagged_questions(
+    items,
+    job_id: int,
+    prior_flagged_by_key: dict[str, FlaggedQuestion],
+) -> list[FlaggedQuestion]:
+    """Recreate flagged rows after optional agent adjustments."""
+
+    refreshed: list[FlaggedQuestion] = []
+    for item in items:
+        if item.answer_text is not None:
+            continue
+
+        normalized = normalize_question_key(item.question_text)
+        prior = prior_flagged_by_key.get(normalized)
+        refreshed.append(
+            FlaggedQuestion(
+                job_id=job_id,
+                extracted_question=item.question_text,
+                context=prior.context if prior else None,
+                location_info=item.location,
+                similarity_score=prior.similarity_score if prior else None,
+                best_match_question=prior.best_match_question if prior else None,
+                resolved=False,
+            )
+        )
+    return refreshed
 
 
 def _troubleshoot_sort_key(profile_result: dict[str, object]) -> tuple[bool, bool, int, float, bool]:
@@ -156,23 +295,68 @@ def _build_troubleshoot_summary(
     return recommended_profile, recommended_label, reason, hints
 
 
-async def _process_document(job_id: int) -> None:
-    """Background task: parse → match → generate filled document."""
+async def _process_document(
+    job_id: int,
+    agent_instructions: str | None = None,
+    runtime_agent_config: AgentRuntimeConfig | None = None,
+) -> None:
+    """Background task: parse → match/fill strategy → generate output."""
+
     await init_db()
     async with async_session() as db:
         try:
-            # Load the job
             job = await db.get(ProcessingJob, job_id)
             if not job:
                 return
 
             job.status = "processing"
+            job.error_message = None
+            job.agent_error = None
+            try:
+                job.agent_mode = normalize_agent_mode(job.agent_mode)
+            except ValueError:
+                job.agent_mode = AGENT_MODE_OFF
+
+            if job.agent_mode == AGENT_MODE_OFF:
+                job.agent_status = "disabled"
+                job.agent_summary = "Agent mode disabled."
+                job.agent_trace = []
+            elif not is_agent_available(runtime_agent_config):
+                job.agent_status = "skipped"
+                job.agent_summary = (
+                    "Agent requested but API settings are incomplete. "
+                    "No semantic fallback was used; unanswered questions will be flagged for review."
+                )
+                job.agent_trace = []
+                _append_job_trace(
+                    job,
+                    step="agent",
+                    status="skipped",
+                    message="Agent requested but unavailable due missing configuration; semantic matcher skipped.",
+                )
+            else:
+                job.agent_status = "pending"
+                if runtime_agent_config:
+                    job.agent_model = runtime_agent_config.model
+                else:
+                    job.agent_model = settings.agent_model
+                job.agent_summary = "Agent queued."
+                job.agent_trace = []
+                _append_job_trace(
+                    job,
+                    step="agent",
+                    status="pending",
+                    message=f"Agent mode '{job.agent_mode}' queued for execution.",
+                    data={
+                        "model": job.agent_model,
+                        "provider": runtime_agent_config.provider if runtime_agent_config else settings.agent_provider,
+                    },
+                )
             await db.commit()
 
             source_path = settings.upload_dir / job.stored_filename
             suffix = source_path.suffix.lower()
 
-            # 1. Parse the document
             parse_result = parse_document_result(
                 source_path,
                 options=get_parse_options(job.parser_profile_name or settings.default_parser_profile),
@@ -185,40 +369,123 @@ async def _process_document(job_id: int) -> None:
             job.parse_stats = parse_result.stats
             job.fallback_recommended = parse_result.fallback_recommended
             job.fallback_reason = parse_result.fallback_reason
+            _append_job_trace(
+                job,
+                step="parser",
+                status="completed",
+                message=f"Extracted {len(items)} question(s) with parser profile '{parse_result.profile_name}'.",
+                data={"confidence": parse_result.confidence},
+            )
+            await db.commit()
 
             if not items:
                 job.status = "done"
                 job.matched_questions = 0
                 job.flagged_questions_count = 0
                 job.completed_at = datetime.datetime.utcnow()
-                # Still generate an output (copy of original for docx)
-                if suffix == ".docx":
+                if suffix in {".docx", ".csv"}:
                     output_name = f"filled_{job.stored_filename}"
                     import shutil
+
                     shutil.copy2(str(source_path), str(settings.output_dir / output_name))
                     job.output_filename = output_name
+                if job.agent_mode != AGENT_MODE_OFF and job.agent_status in {"pending", "running"}:
+                    job.agent_status = "completed"
+                    job.agent_summary = "No questions were extracted, so agent reasoning did not run."
                 await db.commit()
                 return
 
-            # 2. Match questions against knowledge base
-            items, flagged = await match_questions(items, job_id, db)
+            prior_flagged_by_key: dict[str, FlaggedQuestion] = {}
+            if job.agent_mode == AGENT_MODE_OFF:
+                items, flagged = await match_questions(items, job_id, db)
+                for flagged_item in flagged:
+                    key = normalize_question_key(flagged_item.extracted_question)
+                    current = prior_flagged_by_key.get(key)
+                    current_score = (current.similarity_score or -1.0) if current is not None else -1.0
+                    candidate_score = flagged_item.similarity_score or -1.0
+                    if current is None or candidate_score > current_score:
+                        prior_flagged_by_key[key] = flagged_item
 
-            # 3. Save flagged questions
-            for fq in flagged:
-                db.add(fq)
+                _append_job_trace(
+                    job,
+                    step="matcher",
+                    status="completed",
+                    message="Semantic matching completed.",
+                    data={
+                        "matched": sum(1 for item in items if item.answer_text is not None),
+                        "flagged": len(flagged),
+                    },
+                )
+                await db.commit()
+            else:
+                _append_job_trace(
+                    job,
+                    step="matcher",
+                    status="skipped",
+                    message="Semantic matcher skipped in Agent mode (AI-first flow).",
+                )
+                await db.commit()
 
-            matched_count = sum(1 for item in items if item.answer_text is not None)
-            job.matched_questions = matched_count
+            if job.agent_mode != AGENT_MODE_OFF and is_agent_available(runtime_agent_config):
+                try:
+                    job.agent_status = "running"
+                    _append_job_trace(
+                        job,
+                        step="agent",
+                        status="running",
+                        message="Running research + fill agents.",
+                    )
+                    await db.commit()
+
+                    agent_result = await run_contextual_fill_agent(
+                        file_path=source_path,
+                        items=items,
+                        db=db,
+                        mode=job.agent_mode,
+                        instructions=agent_instructions,
+                        runtime_config=runtime_agent_config,
+                    )
+                    items = agent_result.get("items", items)
+
+                    existing_trace = list(job.agent_trace or [])
+                    for event in agent_result.get("trace", []):
+                        if isinstance(event, dict):
+                            existing_trace.append(event)
+                    job.agent_trace = existing_trace
+                    job.agent_status = str(agent_result.get("status") or "completed")
+                    job.agent_summary = str(agent_result.get("summary") or "Agent run completed.")
+                    job.agent_error = None
+                    await db.commit()
+                except Exception as agent_exc:
+                    job.agent_status = "error"
+                    job.agent_error = str(agent_exc)
+                    if not job.agent_summary:
+                        job.agent_summary = "Agent run failed. Unanswered questions were left flagged for review."
+                    _append_job_trace(
+                        job,
+                        step="agent",
+                        status="error",
+                        message="Agent run failed; no semantic fallback applied in Agent mode.",
+                        data={"error": str(agent_exc)},
+                    )
+                    await db.commit()
+
+            flagged = _rebuild_flagged_questions(items, job_id, prior_flagged_by_key)
+            for flagged_item in flagged:
+                db.add(flagged_item)
+
+            job.matched_questions = sum(1 for item in items if item.answer_text is not None)
             job.flagged_questions_count = len(flagged)
 
-            # 4. Generate filled document
-            output_name = f"filled_{uuid.uuid4().hex[:8]}_{Path(job.original_filename).stem}.docx"
+            output_name, _ = _output_file_spec(job.original_filename, suffix)
             output_path = settings.output_dir / output_name
 
             if suffix == ".docx":
                 generate_filled_docx(source_path, output_path, items)
             elif suffix == ".pdf":
                 generate_docx_from_pdf_items(output_path, items)
+            elif suffix == ".csv":
+                generate_filled_csv(source_path, output_path, items)
 
             job.output_filename = output_name
             job.status = "done"
@@ -230,6 +497,13 @@ async def _process_document(job_id: int) -> None:
             if job:
                 job.status = "error"
                 job.error_message = str(e)
+                _append_job_trace(
+                    job,
+                    step="job",
+                    status="error",
+                    message="Processing pipeline failed.",
+                    data={"error": str(e)},
+                )
                 await db.commit()
             raise
 
@@ -238,6 +512,12 @@ async def _process_document(job_id: int) -> None:
 async def upload_document(
     file: UploadFile = File(...),
     parser_profile: str | None = Form(None),
+    agent_mode: str | None = Form(None),
+    agent_instructions: str | None = Form(None),
+    agent_provider: str | None = Form(None),
+    agent_api_base: str | None = Form(None),
+    agent_api_key: str | None = Form(None),
+    agent_model: str | None = Form(None),
     background_tasks: BackgroundTasks = BackgroundTasks(),
     db: AsyncSession = Depends(get_db),
 ):
@@ -249,12 +529,35 @@ async def upload_document(
             detail=f"Unknown parser profile '{parser_profile}'",
         )
 
-    job = await _create_processing_job(file, suffix, parser_profile, db)
+    try:
+        normalized_agent_mode = normalize_agent_mode(agent_mode)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown agent mode '{agent_mode}'")
+
+    runtime_agent_config = _build_runtime_agent_config(
+        agent_provider=agent_provider,
+        agent_api_base=agent_api_base,
+        agent_api_key=agent_api_key,
+        agent_model=agent_model,
+    )
+
+    job = await _create_processing_job(
+        file,
+        suffix,
+        parser_profile,
+        normalized_agent_mode,
+        runtime_agent_config.model if runtime_agent_config else settings.agent_model,
+        db,
+    )
     await db.commit()
     await db.refresh(job)
 
-    # Start background processing
-    background_tasks.add_task(_process_document, job.id)
+    background_tasks.add_task(
+        _process_document,
+        job.id,
+        _clean_optional_form_value(agent_instructions),
+        runtime_agent_config,
+    )
 
     return job
 
@@ -263,11 +566,16 @@ async def upload_document(
 async def bulk_upload_documents(
     files: list[UploadFile] = File(...),
     parser_profile: str | None = Form(None),
+    agent_mode: str | None = Form(None),
+    agent_instructions: str | None = Form(None),
+    agent_provider: str | None = Form(None),
+    agent_api_base: str | None = Form(None),
+    agent_api_key: str | None = Form(None),
+    agent_model: str | None = Form(None),
     background_tasks: BackgroundTasks = BackgroundTasks(),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload multiple questionnaire documents as a grouped batch."""
-
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
     if len(files) > settings.max_bulk_files:
@@ -281,24 +589,58 @@ async def bulk_upload_documents(
             detail=f"Unknown parser profile '{parser_profile}'",
         )
 
+    try:
+        normalized_agent_mode = normalize_agent_mode(agent_mode)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown agent mode '{agent_mode}'")
+
+    runtime_agent_config = _build_runtime_agent_config(
+        agent_provider=agent_provider,
+        agent_api_base=agent_api_base,
+        agent_api_key=agent_api_key,
+        agent_model=agent_model,
+    )
+    cleaned_instructions = _clean_optional_form_value(agent_instructions)
+
     validated_files = [(file, _validate_upload_file(file)) for file in files]
     batch_id = uuid.uuid4().hex[:12]
 
     jobs: list[ProcessingJob] = []
     for file, suffix in validated_files:
-        job = await _create_processing_job(file, suffix, parser_profile, db, batch_id=batch_id)
+        job = await _create_processing_job(
+            file,
+            suffix,
+            parser_profile,
+            normalized_agent_mode,
+            runtime_agent_config.model if runtime_agent_config else settings.agent_model,
+            db,
+            batch_id=batch_id,
+        )
         jobs.append(job)
 
     await db.commit()
     for job in jobs:
         await db.refresh(job)
-        background_tasks.add_task(_process_document, job.id)
+        background_tasks.add_task(
+            _process_document,
+            job.id,
+            cleaned_instructions,
+            runtime_agent_config,
+        )
 
     return _build_batch_response(batch_id, jobs)
 
 
 @router.post("/troubleshoot", response_model=TroubleshootResponse)
-async def troubleshoot_document(file: UploadFile = File(...)):
+async def troubleshoot_document(
+    file: UploadFile = File(...),
+    analyze_with_agent: bool = Form(False),
+    agent_instructions: str | None = Form(None),
+    agent_provider: str | None = Form(None),
+    agent_api_base: str | None = Form(None),
+    agent_api_key: str | None = Form(None),
+    agent_model: str | None = Form(None),
+):
     """Analyze a document across parser profiles without creating a processing job."""
 
     if not file.filename:
@@ -356,6 +698,46 @@ async def troubleshoot_document(file: UploadFile = File(...)):
             profiles,
         )
 
+        agent_analysis = None
+        if analyze_with_agent:
+            runtime_agent_config = _build_runtime_agent_config(
+                agent_provider=agent_provider,
+                agent_api_base=agent_api_base,
+                agent_api_key=agent_api_key,
+                agent_model=agent_model,
+            )
+            try:
+                agent_analysis = await run_troubleshoot_agent(
+                    file_path=temp_path,
+                    profile_results=profiles,
+                    recommended_profile=recommended_profile,
+                    instructions=_clean_optional_form_value(agent_instructions),
+                    runtime_config=runtime_agent_config,
+                )
+            except Exception as agent_exc:
+                agent_analysis = {
+                    "status": "error",
+                    "summary": f"Agent troubleshooting failed: {agent_exc}",
+                    "trace": [],
+                    "root_causes": [],
+                    "next_steps": [],
+                    "recommended_profile": recommended_profile,
+                    "fix_plan": {
+                        "type": "agent_error",
+                        "title": "AI troubleshooting failed for this run",
+                        "rationale": str(agent_exc),
+                        "action": "manual_follow_up",
+                        "can_auto_apply": False,
+                        "parser_profile": recommended_profile,
+                        "parser_profile_label": None,
+                        "parser_hints": {},
+                        "steps": [
+                            "Verify API credentials/model in Settings.",
+                            "Retry Troubleshooting with AI diagnostics.",
+                        ],
+                    },
+                }
+
         return TroubleshootResponse(
             filename=file.filename,
             file_type=suffix.lstrip("."),
@@ -364,6 +746,7 @@ async def troubleshoot_document(file: UploadFile = File(...)):
             recommendation_reason=recommendation_reason,
             hints=hints,
             profiles=profiles,
+            agent_analysis=agent_analysis,
         )
     finally:
         if temp_path.exists():
@@ -438,13 +821,11 @@ async def download_batch_results(batch_id: str, db: AsyncSession = Depends(get_d
     zip_path = settings.output_dir / f"batch_{batch_id}_results.zip"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for index, (job, output_path) in enumerate(completed_jobs, start=1):
-            download_name = f"filled_{Path(job.original_filename).name}"
-            if not download_name.endswith(".docx"):
-                download_name = f"{Path(download_name).stem}.docx"
+            download_name = f"filled_{Path(job.original_filename).stem}{output_path.suffix}"
 
             # Keep names unique in the archive if users upload duplicate filenames.
             if any(info.filename == download_name for info in archive.infolist()):
-                download_name = f"{Path(download_name).stem}_{index}.docx"
+                download_name = f"{Path(download_name).stem}_{index}{output_path.suffix}"
 
             archive.write(output_path, arcname=download_name)
 
@@ -472,12 +853,10 @@ async def download_result(job_id: int, db: AsyncSession = Depends(get_db)):
     if not output_path.exists():
         raise HTTPException(status_code=404, detail="Output file not found on disk")
 
-    download_name = f"filled_{job.original_filename}"
-    if not download_name.endswith(".docx"):
-        download_name = Path(download_name).stem + ".docx"
+    download_name = f"filled_{Path(job.original_filename).stem}{output_path.suffix}"
 
     return FileResponse(
         path=str(output_path),
         filename=download_name,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        media_type=_media_type_for_path(output_path),
     )

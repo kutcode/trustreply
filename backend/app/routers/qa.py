@@ -29,6 +29,26 @@ def _require_category(category: str | None) -> str:
     return value
 
 
+def _normalize_import_record(record: dict) -> dict[str, str]:
+    """Normalize import record keys for case/BOM-insensitive lookup."""
+
+    normalized: dict[str, str] = {}
+    for key, value in record.items():
+        normalized_key = str(key or "").strip().lower().lstrip("\ufeff")
+        normalized[normalized_key] = value
+    return normalized
+
+
+def _clean_import_value(value: object | None) -> str:
+    """Convert import values to normalized strings."""
+
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    return str(value).strip()
+
+
 @router.get("", response_model=QAPairListResponse)
 async def list_qa_pairs(
     page: int = Query(1, ge=1),
@@ -148,32 +168,38 @@ async def import_qa_pairs(
     JSON format: [{"category": "...", "question": "...", "answer": "..."}]
     """
     content = await file.read()
-    text = content.decode("utf-8")
+    text = content.decode("utf-8-sig")
     filename = file.filename or "import.csv"
 
-    records = []
+    records: list[dict[str, object]] = []
+    errors: list[str] = []
 
     if filename.endswith(".json"):
         try:
-            records = json.loads(text)
+            parsed = json.loads(text)
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid JSON format")
+        if not isinstance(parsed, list):
+            raise HTTPException(status_code=400, detail="JSON import must be an array of records")
+        for i, record in enumerate(parsed):
+            if not isinstance(record, dict):
+                errors.append(f"Row {i + 1}: invalid record format (expected object)")
+                continue
+            records.append(_normalize_import_record(record))
     else:
         # Treat as CSV
         reader = csv.DictReader(io.StringIO(text))
         for row in reader:
-            records.append(row)
+            records.append(_normalize_import_record(row))
 
     if not records:
         raise HTTPException(status_code=400, detail="No records found in file")
 
     valid_records = []
-    errors = []
-
     for i, record in enumerate(records):
-        question = record.get("question", "").strip()
-        answer = record.get("answer", "").strip()
-        category = record.get("category", "").strip()
+        question = _clean_import_value(record.get("question"))
+        answer = _clean_import_value(record.get("answer"))
+        category = _clean_import_value(record.get("category"))
 
         if not category or not question or not answer:
             errors.append(f"Row {i + 1}: missing category, question, or answer")
@@ -201,6 +227,7 @@ async def import_qa_pairs(
 
     return {
         "imported": len(valid_records),
+        "skipped": len(records) - len(valid_records),
         "errors": errors,
         "total_rows": len(records),
     }

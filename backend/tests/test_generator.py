@@ -4,7 +4,7 @@ from pathlib import Path
 from docx import Document as DocxDocument
 
 from app.services.parser import ExtractedItem, RunFormat
-from app.services.generator import generate_filled_docx, generate_docx_from_pdf_items
+from app.services.generator import generate_filled_csv, generate_filled_docx, generate_docx_from_pdf_items
 from app.utils.questions import REVIEW_REQUIRED_PLACEHOLDER
 
 
@@ -194,6 +194,50 @@ class TestGenerateFilledDocxParagraphs:
         doc = DocxDocument(str(output))
         all_text = "\n".join(p.text for p in doc.paragraphs)
         assert REVIEW_REQUIRED_PLACEHOLDER in all_text
+
+
+class TestGenerateFilledCsv:
+    """Tests for writing answers into CSV questionnaires."""
+
+    def test_fills_csv_answer_cells(self, make_csv, tmp_path):
+        source = make_csv([
+            ["Question", "Answer"],
+            ["What is your company name?", ""],
+            ["Describe your security policy.", ""],
+        ])
+        output = tmp_path / "filled.csv"
+
+        items = [
+            ExtractedItem(
+                question_text="What is your company name?",
+                item_type="csv_row",
+                location={"row_idx": 1, "q_col_idx": 0, "a_col_idx": 1},
+                answer_text="Acme Corporation",
+            ),
+        ]
+
+        generate_filled_csv(source, output, items)
+        lines = output.read_text(encoding="utf-8").splitlines()
+        assert "Acme Corporation" in lines[1]
+
+    def test_marks_unanswered_csv_rows_for_review(self, make_csv, tmp_path):
+        source = make_csv([
+            ["Question", "Answer"],
+            ["Describe your security policy.", ""],
+        ], filename="review.csv")
+        output = tmp_path / "review_filled.csv"
+
+        items = [
+            ExtractedItem(
+                question_text="Describe your security policy.",
+                item_type="csv_row",
+                location={"row_idx": 1, "q_col_idx": 0, "a_col_idx": 1},
+                answer_text=None,
+            ),
+        ]
+
+        generate_filled_csv(source, output, items)
+        assert REVIEW_REQUIRED_PLACEHOLDER in output.read_text(encoding="utf-8")
 
 
 class TestGenerateDocxFromPdfItems:

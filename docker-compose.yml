@@ -9,6 +9,12 @@ services:
       - QF_DATABASE_URL=sqlite+aiosqlite:///./questionnaire_filler.db
       - QF_SIMILARITY_THRESHOLD=0.75
       - QF_CORS_ORIGINS=["http://localhost:3000"]
+      - QF_AGENT_ENABLED=${QF_AGENT_ENABLED:-false}
+      - QF_AGENT_PROVIDER=${QF_AGENT_PROVIDER:-openai}
+      - QF_AGENT_API_BASE=${QF_AGENT_API_BASE:-https://api.openai.com/v1}
+      - QF_AGENT_API_KEY=${OPENAI_API_KEY:-}
+      - QF_AGENT_MODEL=${QF_AGENT_MODEL:-gpt-4.1-nano}
+      - QF_AGENT_DEFAULT_MODE=${QF_AGENT_DEFAULT_MODE:-agent}
     volumes:
       - backend-uploads:/app/uploads
       - backend-outputs:/app/outputs

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import datetime
+import email.utils
 import json
+import random
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,8 +29,26 @@ AGENT_MODE_OFF = "off"
 AGENT_MODE_AGENT = "agent"
 AGENT_MODES = (AGENT_MODE_OFF, AGENT_MODE_AGENT)
 
+# Runtime provider identifiers.
+PROVIDER_OPENAI_COMPATIBLE = "openai-compatible"
+PROVIDER_OPENAI = "openai"
+PROVIDER_ANTHROPIC = "anthropic"
+
 # Backward-compat aliases for old modes stored in DB or sent by API clients.
 _MODE_ALIASES = {"assist": AGENT_MODE_AGENT, "full": AGENT_MODE_AGENT}
+_PROVIDER_ALIASES = {
+    "openai-compatible": PROVIDER_OPENAI_COMPATIBLE,
+    "openai_compatible": PROVIDER_OPENAI_COMPATIBLE,
+    "openai": PROVIDER_OPENAI,
+    "anthropic": PROVIDER_ANTHROPIC,
+    "claude": PROVIDER_ANTHROPIC,
+}
+
+AGENT_API_MAX_RETRIES = 5
+AGENT_API_BASE_BACKOFF_SECONDS = 1.0
+AGENT_API_MAX_BACKOFF_SECONDS = 30.0
+AGENT_API_MAX_PARALLEL_CALLS = 1
+_AGENT_API_CALL_SEMAPHORE = asyncio.Semaphore(AGENT_API_MAX_PARALLEL_CALLS)
 
 
 @dataclass(frozen=True)
@@ -37,7 +58,14 @@ class AgentRuntimeConfig:
     api_base: str
     api_key: str
     model: str
-    provider: str = "openai-compatible"
+    provider: str = PROVIDER_OPENAI_COMPATIBLE
+
+
+def _normalize_provider(provider: str | None) -> str:
+    """Normalize provider names so UI aliases map to runtime behavior."""
+
+    value = (provider or "").strip().lower()
+    return _PROVIDER_ALIASES.get(value, value or PROVIDER_OPENAI_COMPATIBLE)
 
 
 def default_agent_runtime_config() -> AgentRuntimeConfig:
@@ -47,7 +75,7 @@ def default_agent_runtime_config() -> AgentRuntimeConfig:
         api_base=settings.agent_api_base.strip(),
         api_key=settings.agent_api_key.strip(),
         model=settings.agent_model.strip(),
-        provider=settings.agent_provider.strip() or "openai-compatible",
+        provider=_normalize_provider(settings.agent_provider.strip()),
     )
 
 
@@ -63,7 +91,7 @@ def list_agent_modes() -> list[dict[str, str]]:
         {
             "name": AGENT_MODE_AGENT,
             "label": "Agent",
-            "description": "AI agent reviews all questions using document context and KB. Can override semantic matches with better context-aware answers.",
+            "description": "AI-first mode. Agent decides all answers using document context + KB and flags uncertain fields (no semantic auto-match fallback).",
         },
     ]
 
@@ -160,7 +188,172 @@ def _content_to_text(content: Any) -> str:
     return str(content)
 
 
+def _response_json_or_none(response: httpx.Response) -> dict[str, Any] | None:
+    """Best-effort parse of an HTTP response JSON body."""
+
+    try:
+        data = response.json()
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _response_error_detail(response: httpx.Response) -> str:
+    """Extract a human-friendly error message from provider responses."""
+
+    payload = _response_json_or_none(response)
+    if payload:
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or "").strip()
+            code = str(error.get("code") or error.get("type") or "").strip()
+            if message and code:
+                return f"{message} ({code})"
+            if message:
+                return message
+            if code:
+                return code
+        if isinstance(error, str) and error.strip():
+            return error.strip()
+        message = payload.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+
+    text = (response.text or "").strip()
+    if text:
+        return text[:300]
+    return f"HTTP {response.status_code}"
+
+
+def _is_non_retriable_quota_error(response: httpx.Response) -> bool:
+    """Detect provider errors where retrying immediately is unlikely to help."""
+
+    payload = _response_json_or_none(response)
+    if not payload:
+        return False
+
+    code_values: list[str] = []
+    error = payload.get("error")
+    if isinstance(error, dict):
+        for key in ("code", "type", "message"):
+            value = error.get(key)
+            if isinstance(value, str) and value.strip():
+                code_values.append(value.lower())
+    elif isinstance(error, str) and error.strip():
+        code_values.append(error.lower())
+
+    message = payload.get("message")
+    if isinstance(message, str) and message.strip():
+        code_values.append(message.lower())
+
+    joined = " ".join(code_values)
+    return any(
+        marker in joined
+        for marker in (
+            "insufficient_quota",
+            "billing_hard_limit",
+            "billing",
+            "credit balance is too low",
+            "quota exceeded",
+        )
+    )
+
+
+def _is_retriable_response(response: httpx.Response) -> bool:
+    """Return whether an HTTP response should be retried with backoff."""
+
+    status = response.status_code
+    if status == 429:
+        return not _is_non_retriable_quota_error(response)
+    return status in {408, 409} or 500 <= status <= 599
+
+
+def _retry_delay_seconds(attempt: int, response: httpx.Response | None = None) -> float:
+    """Compute retry delay using Retry-After header or exponential backoff."""
+
+    if response is not None:
+        retry_after = response.headers.get("retry-after")
+        if retry_after:
+            raw = retry_after.strip()
+            try:
+                seconds = float(raw)
+                if seconds >= 0:
+                    return min(seconds, AGENT_API_MAX_BACKOFF_SECONDS)
+            except ValueError:
+                try:
+                    parsed_dt = email.utils.parsedate_to_datetime(raw)
+                except (TypeError, ValueError):
+                    parsed_dt = None
+                if parsed_dt is not None:
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    delta = (parsed_dt - now).total_seconds()
+                    if delta > 0:
+                        return min(delta, AGENT_API_MAX_BACKOFF_SECONDS)
+
+    base_delay = min(
+        AGENT_API_MAX_BACKOFF_SECONDS,
+        AGENT_API_BASE_BACKOFF_SECONDS * (2 ** max(attempt, 0)),
+    )
+    jitter = random.uniform(0, max(base_delay * 0.25, 0.05))
+    return min(AGENT_API_MAX_BACKOFF_SECONDS, base_delay + jitter)
+
+
+async def _post_json_with_retries(
+    *,
+    endpoint: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    provider_label: str,
+) -> dict[str, Any]:
+    """POST JSON with retry/backoff for transient provider failures."""
+
+    max_attempts = max(1, AGENT_API_MAX_RETRIES + 1)
+    timeout = httpx.Timeout(settings.agent_timeout_seconds)
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for attempt in range(max_attempts):
+            try:
+                async with _AGENT_API_CALL_SEMAPHORE:
+                    response = await client.post(endpoint, headers=headers, json=payload)
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+                if attempt + 1 >= max_attempts:
+                    raise RuntimeError(
+                        f"{provider_label} request failed after {max_attempts} attempts: {exc}"
+                    ) from exc
+                await asyncio.sleep(_retry_delay_seconds(attempt))
+                continue
+
+            if response.status_code >= 400:
+                if _is_retriable_response(response) and attempt + 1 < max_attempts:
+                    await asyncio.sleep(_retry_delay_seconds(attempt, response))
+                    continue
+                raise RuntimeError(
+                    f"{provider_label} API error {response.status_code}: {_response_error_detail(response)}"
+                )
+
+            data = _response_json_or_none(response)
+            if data is None:
+                raise ValueError(f"{provider_label} response was not valid JSON")
+            return data
+
+    raise RuntimeError(f"{provider_label} request failed after {max_attempts} attempts.")
+
+
 async def _call_chat_json(
+    messages: list[dict[str, str]],
+    runtime_config: AgentRuntimeConfig,
+    *,
+    temperature: float = 0.1,
+) -> dict[str, Any]:
+    """Call an LLM provider and parse a JSON object response."""
+
+    provider = _normalize_provider(runtime_config.provider)
+    if provider == PROVIDER_ANTHROPIC:
+        return await _call_anthropic_json(messages, runtime_config, temperature=temperature)
+    return await _call_openai_compatible_json(messages, runtime_config, temperature=temperature)
+
+
+async def _call_openai_compatible_json(
     messages: list[dict[str, str]],
     runtime_config: AgentRuntimeConfig,
     *,
@@ -179,11 +372,12 @@ async def _call_chat_json(
         "temperature": temperature,
     }
 
-    timeout = httpx.Timeout(settings.agent_timeout_seconds)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(endpoint, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
+    data = await _post_json_with_retries(
+        endpoint=endpoint,
+        headers=headers,
+        payload=payload,
+        provider_label="OpenAI-compatible",
+    )
 
     choices = data.get("choices") or []
     if not choices:
@@ -191,6 +385,71 @@ async def _call_chat_json(
     message = choices[0].get("message") or {}
     content = _content_to_text(message.get("content"))
     if not content.strip():
+        raise ValueError("Agent response was empty")
+    return _extract_json_object(content)
+
+
+async def _call_anthropic_json(
+    messages: list[dict[str, str]],
+    runtime_config: AgentRuntimeConfig,
+    *,
+    temperature: float = 0.1,
+) -> dict[str, Any]:
+    """Call Anthropic Messages API and parse a JSON object response."""
+
+    api_base = runtime_config.api_base.rstrip("/")
+    endpoint = api_base if api_base.endswith("/messages") else f"{api_base}/messages"
+
+    system_parts: list[str] = []
+    converted_messages: list[dict[str, str]] = []
+    for message in messages:
+        role = str(message.get("role") or "user").strip().lower()
+        content = str(message.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "system":
+            system_parts.append(content)
+            continue
+        if role not in {"user", "assistant"}:
+            role = "user"
+        converted_messages.append({"role": role, "content": content})
+
+    if not converted_messages:
+        converted_messages = [{"role": "user", "content": "{}"}]
+
+    payload: dict[str, Any] = {
+        "model": runtime_config.model,
+        "max_tokens": 2048,
+        "temperature": temperature,
+        "messages": converted_messages,
+    }
+    if system_parts:
+        payload["system"] = "\n\n".join(system_parts)
+
+    headers = {
+        "x-api-key": runtime_config.api_key,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+    }
+
+    data = await _post_json_with_retries(
+        endpoint=endpoint,
+        headers=headers,
+        payload=payload,
+        provider_label="Anthropic",
+    )
+
+    content_blocks = data.get("content") or []
+    text_parts: list[str] = []
+    if isinstance(content_blocks, list):
+        for block in content_blocks:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text_value = block.get("text")
+                if isinstance(text_value, str) and text_value.strip():
+                    text_parts.append(text_value.strip())
+
+    content = "\n".join(text_parts).strip()
+    if not content:
         raise ValueError("Agent response was empty")
     return _extract_json_object(content)
 
@@ -410,6 +669,7 @@ async def run_contextual_fill_agent(
     max_per_call = max(settings.agent_max_questions_per_call, 1)
     ordered_decisions: list[dict[str, Any]] = []
     chunks = _chunked(work_items, max_per_call)
+    failed_chunks = 0
 
     for chunk_idx, chunk in enumerate(chunks, start=1):
         payload_questions = []
@@ -425,103 +685,114 @@ async def run_contextual_fill_agent(
                 }
             )
 
-        append_trace(
-            trace,
-            "research",
-            "running",
-            f"Running research agent on chunk {chunk_idx}/{len(chunks)}.",
-            {"chunk_size": len(payload_questions)},
-        )
+        try:
+            append_trace(
+                trace,
+                "research",
+                "running",
+                f"Running research agent on chunk {chunk_idx}/{len(chunks)}.",
+                {"chunk_size": len(payload_questions)},
+            )
 
-        research_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are ResearchAgent for questionnaire autofill. Your job is to think like a person "
-                    "sitting down to fill in a questionnaire on behalf of their company.\n\n"
-                    "CRITICAL CONTEXT RULES:\n"
-                    "1. The DOCUMENT CONTEXT shows the questionnaire being filled. Read headers, titles, and "
-                    "surrounding text to understand WHO is being asked (e.g., which company/vendor).\n"
-                    "2. The KB CANDIDATES contain answers from YOUR company's knowledge base — these are "
-                    "answers about YOUR company's policies, practices, and information.\n"
-                    "3. For GENERAL questions about your company (security policies, compliance, certifications, "
-                    "processes), use KB candidates confidently when they match.\n"
-                    "4. For CONTEXT-SPECIFIC questions (Company Name, Contact Person, Date, Project Name, "
-                    "Client Reference, specific third-party names), these change per questionnaire. Flag these "
-                    "for human review unless the answer is clearly derivable from the document context itself.\n"
-                    "5. Do NOT invent facts. Do NOT guess contact details, dates, or entity-specific information.\n"
-                    "6. When unsure, set needs_human_review=true and confidence below 0.5.\n\n"
-                    "Return strict JSON: "
-                    "{\"notes\":[{\"id\":\"...\",\"research_summary\":\"...\",\"proposed_answer\":\"...\","
-                    "\"confidence\":0.0,\"needs_human_review\":false,\"issues\":[\"...\"]}]}"
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "mode": mode,
-                        "instructions": instructions or "",
-                        "document_context": document_context,
-                        "questions": payload_questions,
-                    },
-                    ensure_ascii=False,
-                ),
-            },
-        ]
-        research_result = await _call_chat_json(research_messages, runtime, temperature=0.0)
-        research_notes = research_result.get("notes", [])
-        if not isinstance(research_notes, list):
-            research_notes = []
+            research_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are ResearchAgent for questionnaire autofill. Your job is to think like a person "
+                        "sitting down to fill in a questionnaire on behalf of their company.\n\n"
+                        "CRITICAL CONTEXT RULES:\n"
+                        "1. The DOCUMENT CONTEXT shows the questionnaire being filled. Read headers, titles, and "
+                        "surrounding text to understand WHO is being asked (e.g., which company/vendor).\n"
+                        "2. The KB CANDIDATES contain answers from YOUR company's knowledge base — these are "
+                        "answers about YOUR company's policies, practices, and information.\n"
+                        "3. For GENERAL questions about your company (security policies, compliance, certifications, "
+                        "processes), use KB candidates confidently when they match.\n"
+                        "4. For CONTEXT-SPECIFIC questions (Company Name, Contact Person, Date, Project Name, "
+                        "Client Reference, specific third-party names), these change per questionnaire. Flag these "
+                        "for human review unless the answer is clearly derivable from the document context itself.\n"
+                        "5. Do NOT invent facts. Do NOT guess contact details, dates, or entity-specific information.\n"
+                        "6. When unsure, set needs_human_review=true and confidence below 0.5.\n\n"
+                        "Return strict JSON: "
+                        "{\"notes\":[{\"id\":\"...\",\"research_summary\":\"...\",\"proposed_answer\":\"...\","
+                        "\"confidence\":0.0,\"needs_human_review\":false,\"issues\":[\"...\"]}]}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "mode": mode,
+                            "instructions": instructions or "",
+                            "document_context": document_context,
+                            "questions": payload_questions,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+            research_result = await _call_chat_json(research_messages, runtime, temperature=0.0)
+            research_notes = research_result.get("notes", [])
+            if not isinstance(research_notes, list):
+                research_notes = []
 
-        append_trace(
-            trace,
-            "fill",
-            "running",
-            f"Running fill agent on chunk {chunk_idx}/{len(chunks)}.",
-            {"research_notes": len(research_notes)},
-        )
+            append_trace(
+                trace,
+                "fill",
+                "running",
+                f"Running fill agent on chunk {chunk_idx}/{len(chunks)}.",
+                {"research_notes": len(research_notes)},
+            )
 
-        fill_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are FillAgent for questionnaire completion. Think like a professional filling in "
-                    "a vendor/compliance questionnaire on behalf of their company.\n\n"
-                    "DECISION RULES:\n"
-                    "1. ACTION='answer' only when confidence >= 0.7 AND the answer is factually supported "
-                    "by KB candidates or clear document context.\n"
-                    "2. ACTION='flag' when: confidence < 0.7, the question is context-specific (names, "
-                    "dates, contacts, project references), the KB has no relevant match, or there is any "
-                    "ambiguity about which entity the question refers to.\n"
-                    "3. For context-specific fields (Company Name, Contact Person, Date, Address, etc.), "
-                    "ALWAYS flag unless a prior answer or document header makes the answer unambiguous.\n"
-                    "4. When flagging, include a clear 'reason' explaining what information is needed so "
-                    "the human reviewer can fill it quickly.\n"
-                    "5. Prefer KB-backed answers for general policy/compliance/security questions.\n"
-                    "6. Never fabricate information. A wrong answer is worse than a flag.\n\n"
-                    "Return strict JSON: "
-                    "{\"decisions\":[{\"id\":\"...\",\"action\":\"answer|flag\",\"answer\":\"...\","
-                    "\"confidence\":0.0,\"reason\":\"...\",\"issues\":[\"...\"]}],\"summary\":\"...\"}"
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "mode": mode,
-                        "instructions": instructions or "",
-                        "questions": payload_questions,
-                        "research_notes": research_notes,
-                    },
-                    ensure_ascii=False,
-                ),
-            },
-        ]
-        fill_result = await _call_chat_json(fill_messages, runtime, temperature=0.0)
-        chunk_decisions = fill_result.get("decisions", [])
-        if not isinstance(chunk_decisions, list):
-            chunk_decisions = []
+            fill_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are FillAgent for questionnaire completion. Think like a professional filling in "
+                        "a vendor/compliance questionnaire on behalf of their company.\n\n"
+                        "DECISION RULES:\n"
+                        "1. ACTION='answer' only when confidence >= 0.7 AND the answer is factually supported "
+                        "by KB candidates or clear document context.\n"
+                        "2. ACTION='flag' when: confidence < 0.7, the question is context-specific (names, "
+                        "dates, contacts, project references), the KB has no relevant match, or there is any "
+                        "ambiguity about which entity the question refers to.\n"
+                        "3. For context-specific fields (Company Name, Contact Person, Date, Address, etc.), "
+                        "ALWAYS flag unless a prior answer or document header makes the answer unambiguous.\n"
+                        "4. When flagging, include a clear 'reason' explaining what information is needed so "
+                        "the human reviewer can fill it quickly.\n"
+                        "5. Prefer KB-backed answers for general policy/compliance/security questions.\n"
+                        "6. Never fabricate information. A wrong answer is worse than a flag.\n\n"
+                        "Return strict JSON: "
+                        "{\"decisions\":[{\"id\":\"...\",\"action\":\"answer|flag\",\"answer\":\"...\","
+                        "\"confidence\":0.0,\"reason\":\"...\",\"issues\":[\"...\"]}],\"summary\":\"...\"}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "mode": mode,
+                            "instructions": instructions or "",
+                            "questions": payload_questions,
+                            "research_notes": research_notes,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+            fill_result = await _call_chat_json(fill_messages, runtime, temperature=0.0)
+            chunk_decisions = fill_result.get("decisions", [])
+            if not isinstance(chunk_decisions, list):
+                chunk_decisions = []
+        except Exception as chunk_exc:
+            failed_chunks += 1
+            append_trace(
+                trace,
+                "fill",
+                "error",
+                f"Chunk {chunk_idx}/{len(chunks)} failed; leaving {len(payload_questions)} question(s) flagged.",
+                {"error": str(chunk_exc)},
+            )
+            continue
 
         for decision in chunk_decisions:
             if not isinstance(decision, dict):
@@ -570,10 +841,13 @@ async def run_contextual_fill_agent(
     answers_generated = 0
     overrides = 0
     flags_recommended = 0
+    unresolved_questions = 0
 
     for idx, item in enumerate(items):
         before = original_answers[idx]
         after = item.answer_text
+        if after is None:
+            unresolved_questions += 1
         if before is None and after is not None:
             answers_generated += 1
         if before is not None and after is None:
@@ -581,27 +855,33 @@ async def run_contextual_fill_agent(
         if before is not None and after is not None and before.strip() != after.strip():
             overrides += 1
 
-    summary = (
-        f"Agent processed {len(work_items)} questions, generated {answers_generated} answer(s), "
-        f"recommended {flags_recommended} additional flag(s), and adjusted {overrides} existing answer(s)."
-    )
+    summary = f"Agent processed {len(work_items)} questions, generated {answers_generated} answer(s), and left {unresolved_questions} question(s) flagged for review."
+    if overrides > 0:
+        summary += f" Adjusted {overrides} existing answer(s)."
+    if flags_recommended > 0:
+        summary += f" Added {flags_recommended} new flag(s) over prior answers."
+    if failed_chunks > 0:
+        summary += f" {failed_chunks} chunk(s) hit transient API issues."
+    final_status = "completed" if failed_chunks == 0 else "completed_with_warnings"
     append_trace(
         trace,
         "agent",
-        "completed",
+        final_status,
         summary,
     )
 
     return {
         "items": items,
         "trace": trace,
-        "status": "completed",
+        "status": final_status,
         "summary": summary,
         "stats": {
             "questions_considered": len(work_items),
             "answers_generated": answers_generated,
+            "unresolved_questions": unresolved_questions,
             "flags_recommended": flags_recommended,
             "overrides": overrides,
+            "failed_chunks": failed_chunks,
         },
         "decisions": ordered_decisions[:100],
     }
@@ -619,6 +899,18 @@ async def run_troubleshoot_agent(
 
     runtime = runtime_config or default_agent_runtime_config()
     trace: list[dict[str, Any]] = []
+    profile_labels = {
+        str(profile.get("profile_name")): str(profile.get("profile_label") or profile.get("profile_name") or "")
+        for profile in profile_results
+        if profile.get("profile_name")
+    }
+    valid_profiles = set(profile_labels.keys())
+    rule_recommended = (
+        str(recommended_profile).strip()
+        if recommended_profile and str(recommended_profile).strip() in valid_profiles
+        else None
+    )
+
     if not is_agent_available(runtime):
         append_trace(
             trace,
@@ -632,7 +924,20 @@ async def run_troubleshoot_agent(
             "trace": trace,
             "root_causes": [],
             "next_steps": [],
-            "recommended_profile": recommended_profile,
+            "recommended_profile": rule_recommended,
+            "fix_plan": {
+                "type": "configuration",
+                "title": "Configure AI provider to enable model troubleshooting",
+                "action": "manual_follow_up",
+                "can_auto_apply": False,
+                "parser_profile": rule_recommended,
+                "parser_profile_label": profile_labels.get(rule_recommended) if rule_recommended else None,
+                "parser_hints": {},
+                "steps": [
+                    "Open Settings and add AI provider credentials.",
+                    "Run Troubleshooting again with AI diagnostics enabled.",
+                ],
+            },
         }
 
     context = _extract_document_context(file_path, [])
@@ -655,10 +960,12 @@ async def run_troubleshoot_agent(
             "role": "system",
             "content": (
                 "You are TroubleshootAgent for questionnaire parsing diagnostics. "
-                "Analyze parser-profile outcomes and explain likely root causes. "
+                "Analyze parser-profile outcomes and explain likely root causes, then suggest the safest system fix. "
                 "Return strict JSON object: "
                 "{\"summary\":\"...\",\"root_causes\":[\"...\"],\"next_steps\":[\"...\"],"
-                "\"recommended_profile\":\"profile_or_null\"}"
+                "\"recommended_profile\":\"profile_or_null\",\"fix_type\":\"switch_profile|ocr|layout|parser_gap|none\","
+                "\"fix_rationale\":\"...\","
+                "\"parser_hints\":{\"question_column_index\":0,\"answer_column_index\":1,\"header_rows\":1,\"detect_row_blocks\":true}}"
             ),
         },
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -669,6 +976,9 @@ async def run_troubleshoot_agent(
     root_causes = result.get("root_causes")
     next_steps = result.get("next_steps")
     recommended = result.get("recommended_profile")
+    fix_type = str(result.get("fix_type") or "").strip().lower()
+    fix_rationale = str(result.get("fix_rationale") or "").strip()
+    parser_hints_raw = result.get("parser_hints")
 
     if not isinstance(root_causes, list):
         root_causes = []
@@ -676,16 +986,89 @@ async def run_troubleshoot_agent(
         next_steps = []
     if recommended is not None:
         recommended = str(recommended).strip() or None
+    if recommended and recommended not in valid_profiles:
+        recommended = None
+    if not recommended and rule_recommended:
+        recommended = rule_recommended
 
     if not summary:
         summary = "Agent analysis completed."
 
-    append_trace(trace, "agent", "completed", summary)
+    parser_hints: dict[str, Any] = {}
+    if isinstance(parser_hints_raw, dict):
+        integer_keys = {"question_column_index", "answer_column_index", "header_rows"}
+        boolean_keys = {"detect_row_blocks"}
+        for key in integer_keys:
+            value = parser_hints_raw.get(key)
+            if isinstance(value, bool):
+                continue
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                continue
+            if parsed >= 0:
+                parser_hints[key] = parsed
+        for key in boolean_keys:
+            value = parser_hints_raw.get(key)
+            if isinstance(value, bool):
+                parser_hints[key] = value
+
+    can_auto_apply = bool(recommended)
+    if can_auto_apply:
+        profile_label = profile_labels.get(recommended, recommended)
+        fix_title = f"Switch to '{profile_label}' parser profile for this layout"
+        fix_action = "set_default_parser_profile"
+        fix_steps = [
+            f"Apply '{recommended}' as the default parser profile.",
+            "Re-upload the problematic document and verify extracted question preview.",
+            "Keep agent mode enabled so uncertain answers remain flagged.",
+        ]
+        if not fix_type:
+            fix_type = "switch_profile"
+    else:
+        profile_label = None
+        fix_title = "Document needs manual parsing remediation"
+        fix_action = "manual_follow_up"
+        fix_steps = [str(step).strip() for step in next_steps if str(step).strip()][:3]
+        if not fix_steps:
+            if file_path.suffix.lower() == ".pdf":
+                fix_steps = [
+                    "Ensure the PDF has selectable text (run OCR if scanned).",
+                    "Retry troubleshooting after OCR/export.",
+                ]
+                if not fix_type:
+                    fix_type = "ocr"
+            else:
+                fix_steps = [
+                    "Retry with a clean export to DOCX/CSV.",
+                    "If the layout is custom, add a dedicated parser profile.",
+                ]
+                if not fix_type:
+                    fix_type = "layout"
+
+    append_trace(
+        trace,
+        "agent",
+        "completed",
+        summary,
+        data={"recommended_profile": recommended, "auto_fix": can_auto_apply},
+    )
     return {
         "status": "completed",
         "summary": summary,
         "trace": trace,
         "root_causes": [str(item) for item in root_causes[:8]],
         "next_steps": [str(item) for item in next_steps[:8]],
-        "recommended_profile": recommended or recommended_profile,
+        "recommended_profile": recommended,
+        "fix_plan": {
+            "type": fix_type or "none",
+            "title": fix_title,
+            "rationale": fix_rationale or summary,
+            "action": fix_action,
+            "can_auto_apply": can_auto_apply,
+            "parser_profile": recommended,
+            "parser_profile_label": profile_label,
+            "parser_hints": parser_hints,
+            "steps": fix_steps,
+        },
     }

@@ -6,6 +6,7 @@ from docx import Document as DocxDocument
 
 from app.services.parser import (
     ParseOptions,
+    parse_csv,
     parse_docx,
     parse_document,
     parse_document_result,
@@ -39,6 +40,9 @@ class TestIsQuestion:
 
     def test_random_short_text_rejected(self):
         assert not _is_question("OK done")
+
+    def test_instruction_line_rejected(self):
+        assert not _is_question("Please provide detailed responses to each question below.")
 
 
 class TestParseDocxTables:
@@ -159,6 +163,22 @@ class TestParseDocxTables:
         assert "Please provide response" not in questions
         assert "Describe your security policy." in questions
 
+    def test_instruction_rows_are_not_extracted_without_header_hint(self, tmp_path):
+        doc = DocxDocument()
+        table = doc.add_table(rows=2, cols=2)
+        table.rows[0].cells[0].text = "Please provide detailed responses to each question below."
+        table.rows[0].cells[1].text = ""
+        table.rows[1].cells[0].text = "Describe your security policy."
+        table.rows[1].cells[1].text = ""
+
+        path = tmp_path / "instruction_row.docx"
+        doc.save(str(path))
+
+        items = parse_docx(path)
+        questions = [item.question_text for item in items]
+        assert "Please provide detailed responses to each question below." not in questions
+        assert "Describe your security policy." in questions
+
     def test_merged_question_row_targets_following_answer_row(self, tmp_path):
         doc = DocxDocument()
         table = doc.add_table(rows=2, cols=3)
@@ -210,6 +230,47 @@ class TestParseDocxParagraphs:
         assert count == 1, f"Expected 1 occurrence, got {count}"
 
 
+class TestParseCsvRows:
+    """Tests for CSV-based question extraction."""
+
+    def test_extracts_two_column_csv_questions(self, make_csv):
+        path = make_csv([
+            ["Question", "Answer"],
+            ["What is your company name?", ""],
+            ["Describe your security policy.", ""],
+        ])
+
+        items = parse_csv(path)
+        questions = [item.question_text for item in items]
+        assert len(items) == 2
+        assert "What is your company name?" in questions
+        assert all(item.item_type == "csv_row" for item in items)
+
+    def test_auto_detects_three_column_csv_question_layout(self, make_csv):
+        path = make_csv([
+            ["Domain", "Question", "Response"],
+            ["Security", "Describe your incident response process.", ""],
+        ], filename="three_col.csv")
+
+        items = parse_csv(path)
+        assert len(items) == 1
+        assert items[0].question_text == "Describe your incident response process."
+        assert items[0].location["q_col_idx"] == 1
+        assert items[0].location["a_col_idx"] == 2
+
+    def test_auto_detects_four_column_csv_question_layout(self, make_csv):
+        path = make_csv([
+            ["Domain", "Reference", "Question", "Response"],
+            ["Security", "SEC-01", "Describe your vulnerability management lifecycle.", ""],
+        ], filename="four_col.csv")
+
+        items = parse_csv(path)
+        assert len(items) == 1
+        assert items[0].question_text == "Describe your vulnerability management lifecycle."
+        assert items[0].location["q_col_idx"] == 2
+        assert items[0].location["a_col_idx"] == 3
+
+
 class TestParseDocument:
     """Tests for the unified parse_document entry point."""
 
@@ -233,6 +294,16 @@ class TestParseDocument:
         assert result.items == []
         assert result.fallback_recommended is True
         assert result.fallback_reason == "no_questions_found"
+
+    def test_parse_document_result_supports_csv(self, make_csv):
+        path = make_csv([
+            ["Question", "Answer"],
+            ["Describe your disaster recovery plan.", ""],
+        ])
+        result = parse_document_result(path)
+        assert result.items[0].item_type == "csv_row"
+        assert result.stats["csv_items"] == 1
+        assert result.fallback_recommended is False
 
     def test_unsupported_format(self, tmp_path):
         path = tmp_path / "test.txt"

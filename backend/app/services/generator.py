@@ -9,6 +9,7 @@ from docx.shared import Pt, RGBColor
 from docx.oxml.ns import qn
 
 from app.services.parser import ExtractedItem, RunFormat
+from app.utils.csv_files import read_csv_rows, write_csv_rows
 from app.utils.questions import REVIEW_REQUIRED_PLACEHOLDER
 
 
@@ -240,4 +241,31 @@ def generate_docx_from_pdf_items(
         doc.add_paragraph("")  # spacing
 
     doc.save(str(output_path))
+    return output_path
+
+
+def generate_filled_csv(
+    source_path: Path,
+    output_path: Path,
+    items: list[ExtractedItem],
+) -> Path:
+    """Fill a CSV questionnaire with matched answers or visible review placeholders."""
+
+    rows, csv_format = read_csv_rows(source_path)
+    row_items: dict[int, list[ExtractedItem]] = {}
+    for item in items:
+        if item.item_type == "csv_row":
+            row_items.setdefault(int(item.location["row_idx"]), []).append(item)
+
+    for row_idx, indexed_items in row_items.items():
+        if row_idx >= len(rows):
+            continue
+        row = rows[row_idx]
+        for item in indexed_items:
+            answer_col_idx = int(item.location.get("a_col_idx", item.location.get("answer_col_idx", 1)))
+            while len(row) <= answer_col_idx:
+                row.append("")
+            row[answer_col_idx] = item.answer_text or REVIEW_REQUIRED_PLACEHOLDER
+
+    write_csv_rows(output_path, rows, csv_format)
     return output_path

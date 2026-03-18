@@ -23,7 +23,7 @@ class ExtractedItem:
     """A single question/field extracted from a document."""
 
     question_text: str
-    item_type: str  # "table_cell" | "paragraph" | "pdf_text" | "pdf_table"
+    item_type: str  # "table_cell" | "paragraph" | "pdf_text" | "pdf_table" | "csv_row"
     location: dict = field(default_factory=dict)
     formatting: RunFormat | None = None
     answer_text: str | None = None  # populated after matching

@@ -42,6 +42,12 @@ async def _ensure_sqlite_job_columns(conn) -> None:
         "parse_stats": "ALTER TABLE processing_jobs ADD COLUMN parse_stats JSON",
         "fallback_recommended": "ALTER TABLE processing_jobs ADD COLUMN fallback_recommended BOOLEAN DEFAULT 0",
         "fallback_reason": "ALTER TABLE processing_jobs ADD COLUMN fallback_reason VARCHAR(100)",
+        "agent_mode": "ALTER TABLE processing_jobs ADD COLUMN agent_mode VARCHAR(32)",
+        "agent_status": "ALTER TABLE processing_jobs ADD COLUMN agent_status VARCHAR(32)",
+        "agent_summary": "ALTER TABLE processing_jobs ADD COLUMN agent_summary TEXT",
+        "agent_trace": "ALTER TABLE processing_jobs ADD COLUMN agent_trace JSON",
+        "agent_error": "ALTER TABLE processing_jobs ADD COLUMN agent_error TEXT",
+        "agent_model": "ALTER TABLE processing_jobs ADD COLUMN agent_model VARCHAR(128)",
     }
 
     for column_name, ddl in required_columns.items():
