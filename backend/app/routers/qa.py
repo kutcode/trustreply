@@ -5,7 +5,7 @@ import csv
 import io
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Response
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -90,6 +90,39 @@ async def list_categories(db: AsyncSession = Depends(get_db)):
     )
     categories = [row[0] for row in result.all() if row[0]]
     return {"categories": sorted(categories)}
+
+
+@router.get("/export")
+async def export_qa_pairs(
+    format: str = Query("csv", description="Export format: csv or json"),
+    category: str = Query("", description="Optional category filter"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Export all Q&A pairs as CSV or JSON download."""
+    query = select(QAPair)
+    if category:
+        query = query.where(QAPair.category == category)
+    query = query.order_by(QAPair.category, QAPair.created_at.desc())
+    result = await db.execute(query)
+    items = result.scalars().all()
+
+    if format == "json":
+        data = [
+            {"category": item.category or "", "question": item.question, "answer": item.answer}
+            for item in items
+        ]
+        content = json.dumps(data, indent=2, ensure_ascii=False)
+        headers = {"Content-Disposition": 'attachment; filename="knowledge_base.json"'}
+        return Response(content=content, media_type="application/json; charset=utf-8", headers=headers)
+
+    # Default: CSV
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=["category", "question", "answer"])
+    writer.writeheader()
+    for item in items:
+        writer.writerow({"category": item.category or "", "question": item.question, "answer": item.answer})
+    headers = {"Content-Disposition": 'attachment; filename="knowledge_base.csv"'}
+    return Response(content=output.getvalue(), media_type="text/csv; charset=utf-8", headers=headers)
 
 
 @router.post("", response_model=QAPairResponse)
@@ -208,26 +241,43 @@ async def import_qa_pairs(
         valid_records.append((question, answer, category))
 
     if not valid_records:
-        return {"imported": 0, "errors": errors, "total_rows": len(records)}
+        return {"imported": 0, "errors": errors, "duplicates": 0, "duplicate_questions": [], "total_rows": len(records)}
 
-    # Batch compute all embeddings at once (3-5x faster than one-by-one)
-    questions = [q for q, a, c in valid_records]
-    embeddings = compute_embeddings(questions)
+    # Detect duplicates against existing KB
+    existing_result = await db.execute(select(QAPair.question))
+    existing_normalized = {row[0].strip().lower() for row in existing_result.all() if row[0]}
 
-    for (question, answer, category), emb in zip(valid_records, embeddings):
-        qa = QAPair(
-            category=category,
-            question=question,
-            answer=answer,
-            embedding=embedding_to_bytes(emb),
-        )
-        db.add(qa)
+    unique_records = []
+    duplicate_questions: list[str] = []
+    for question, answer, category in valid_records:
+        normalized_q = question.strip().lower()
+        if normalized_q in existing_normalized:
+            duplicate_questions.append(question)
+        else:
+            unique_records.append((question, answer, category))
+            existing_normalized.add(normalized_q)
 
-    await db.commit()
+    if unique_records:
+        # Batch compute all embeddings at once (3-5x faster than one-by-one)
+        questions = [q for q, a, c in unique_records]
+        embeddings = compute_embeddings(questions)
+
+        for (question, answer, category), emb in zip(unique_records, embeddings):
+            qa = QAPair(
+                category=category,
+                question=question,
+                answer=answer,
+                embedding=embedding_to_bytes(emb),
+            )
+            db.add(qa)
+
+        await db.commit()
 
     return {
-        "imported": len(valid_records),
+        "imported": len(unique_records),
         "skipped": len(records) - len(valid_records),
+        "duplicates": len(duplicate_questions),
+        "duplicate_questions": duplicate_questions[:10],
         "errors": errors,
         "total_rows": len(records),
     }

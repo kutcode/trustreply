@@ -1158,3 +1158,59 @@ a:hover {
     padding: 1.25rem;
   }
 }
+
+/* ── Preset Dropdown ────────────────────────────────────────────── */
+
+.preset-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 100;
+  min-width: 260px;
+  margin-top: 0.35rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: 0.35rem 0;
+}
+
+.preset-dropdown-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.55rem 0.85rem;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.preset-dropdown-item:hover {
+  background: var(--bg-hover);
+}
+
+.preset-dropdown-save {
+  color: var(--accent-primary);
+  font-weight: 600;
+}
+
+.preset-dropdown-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 0.3rem 0;
+}
+
+.preset-dropdown-delete {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  padding: 0.35rem 0.65rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.preset-dropdown-delete:hover {
+  color: var(--error);
+}

@@ -29,6 +29,26 @@ const AGENT_MODES = [
   },
 ];
 
+const BUILT_IN_PRESETS = [
+  { name: 'Concise Answers', instructions: 'Provide brief, factual answers. Keep responses under 2 sentences.' },
+  { name: 'Detailed Explanations', instructions: 'Provide thorough, detailed answers with context and reasoning.' },
+  { name: 'Policy-Focused', instructions: 'Answer from a compliance and policy perspective. Reference industry standards where applicable.' },
+  { name: 'Technical', instructions: 'Provide technical answers with specific details. Include version numbers and specifications where relevant.' },
+];
+
+const PRESETS_STORAGE_KEY = 'trustreply_agent_presets';
+
+function loadCustomPresets() {
+  try {
+    const raw = typeof window !== 'undefined' ? localStorage.getItem(PRESETS_STORAGE_KEY) : null;
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function saveCustomPresets(presets) {
+  localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(presets));
+}
+
 function isFinishedStatus(status) {
   return status === 'done' || status === 'error';
 }
@@ -85,8 +105,11 @@ export default function UploadPage() {
   const [agentAvailable, setAgentAvailable] = useState(false);
   const [maxBulkFiles, setMaxBulkFiles] = useState(FALLBACK_MAX_BULK_FILES);
   const [toast, setToast] = useState(null);
+  const [showPresetMenu, setShowPresetMenu] = useState(false);
+  const [customPresets, setCustomPresets] = useState([]);
   const pollRef = useRef(null);
   const thinkingRef = useRef(null);
+  const presetMenuRef = useRef(null);
 
   const showToast = useCallback((message, type = 'info') => {
     setToast({ message, type });
@@ -120,6 +143,46 @@ export default function UploadPage() {
       })
       .catch(() => { });
   }, []);
+
+  useEffect(() => {
+    setCustomPresets(loadCustomPresets());
+  }, []);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (presetMenuRef.current && !presetMenuRef.current.contains(e.target)) {
+        setShowPresetMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleSelectPreset = (instructions) => {
+    setAgentInstructions(instructions);
+    setShowPresetMenu(false);
+  };
+
+  const handleSavePreset = () => {
+    const trimmed = agentInstructions.trim();
+    if (!trimmed) {
+      showToast('Enter instructions first', 'error');
+      return;
+    }
+    const name = prompt('Preset name:');
+    if (!name || !name.trim()) return;
+    const updated = [...customPresets, { name: name.trim(), instructions: trimmed }];
+    setCustomPresets(updated);
+    saveCustomPresets(updated);
+    showToast('✅ Preset saved', 'success');
+    setShowPresetMenu(false);
+  };
+
+  const handleDeletePreset = (index) => {
+    const updated = customPresets.filter((_, i) => i !== index);
+    setCustomPresets(updated);
+    saveCustomPresets(updated);
+  };
 
   const pollJob = useCallback(async (jobId) => {
     try {
@@ -456,7 +519,42 @@ export default function UploadPage() {
             )}
 
             <div style={{ marginTop: '0.9rem' }}>
-              <label className="form-label">Agent Instructions (Optional)</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.35rem' }}>
+                <label className="form-label" style={{ margin: 0 }}>Agent Instructions (Optional)</label>
+                <div style={{ position: 'relative' }} ref={presetMenuRef}>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary"
+                    onClick={() => setShowPresetMenu(!showPresetMenu)}
+                  >
+                    Presets ▾
+                  </button>
+                  {showPresetMenu && (
+                    <div className="preset-dropdown">
+                      {BUILT_IN_PRESETS.map((preset) => (
+                        <button key={preset.name} className="preset-dropdown-item" onClick={() => handleSelectPreset(preset.instructions)}>
+                          {preset.name}
+                        </button>
+                      ))}
+                      {customPresets.length > 0 && <div className="preset-dropdown-divider" />}
+                      {customPresets.map((preset, i) => (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center' }}>
+                          <button className="preset-dropdown-item" style={{ flex: 1 }} onClick={() => handleSelectPreset(preset.instructions)}>
+                            {preset.name}
+                          </button>
+                          <button className="preset-dropdown-delete" onClick={() => handleDeletePreset(i)} title="Remove preset">
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                      <div className="preset-dropdown-divider" />
+                      <button className="preset-dropdown-item preset-dropdown-save" onClick={handleSavePreset}>
+                        + Save current as preset
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
               <textarea
                 className="form-textarea"
                 rows={3}

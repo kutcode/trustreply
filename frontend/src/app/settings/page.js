@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { getSettings, listAgentModels, saveSettings } from '@/lib/api';
+import { getSettings, listAgentModels, saveSettings, testAgentConnection } from '@/lib/api';
 
 const AGENT_PROVIDER_PRESETS = {
   openai: {
@@ -102,6 +102,7 @@ export default function SettingsPage() {
   const [modelOptions, setModelOptions] = useState([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelLoadError, setModelLoadError] = useState('');
+  const [testingConnection, setTestingConnection] = useState(false);
 
   const showToast = useCallback((message, type = 'info') => {
     setToast({ message, type });
@@ -196,6 +197,22 @@ export default function SettingsPage() {
     } else {
       setModelOptions(getStaticModels(preset.provider));
       setModelLoadError('Enter an API key and click Refresh models to load provider model options.');
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setTestingConnection(true);
+    try {
+      const result = await testAgentConnection({
+        provider: agentProvider,
+        apiBase: agentApiBase,
+        apiKey: agentApiKey,
+      });
+      showToast(`✅ ${result.message}`, 'success');
+    } catch (err) {
+      showToast(`❌ ${err.message}`, 'error');
+    } finally {
+      setTestingConnection(false);
     }
   };
 
@@ -443,6 +460,15 @@ export default function SettingsPage() {
                 onChange={(e) => setAgentApiKey(e.target.value)}
                 placeholder={agentHasKey ? 'Leave blank to keep current key' : (AGENT_PROVIDER_PRESETS[selectedPreset]?.keyHint || 'API key')}
               />
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={handleTestConnection}
+                disabled={testingConnection}
+                style={{ marginTop: '0.5rem' }}
+              >
+                {testingConnection ? 'Testing...' : '🔌 Test Connection'}
+              </button>
             </div>
           </div>
 

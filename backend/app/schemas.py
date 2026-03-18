@@ -172,6 +172,12 @@ class AgentModelsResponse(BaseModel):
     models: list[AgentModelOption]
 
 
+class TestConnectionResponse(BaseModel):
+    ok: bool
+    provider: str
+    message: str
+
+
 # ── Troubleshooting ────────────────────────────────────────────────
 
 class TroubleshootProfileResult(BaseModel):

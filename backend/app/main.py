@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import init_db
 from app.routers import upload, qa, flagged
-from app.schemas import AgentModelsRequest, AgentModelsResponse, AppSettingsUpdate
+from app.schemas import AgentModelsRequest, AgentModelsResponse, AppSettingsUpdate, TestConnectionResponse
 from app.services.agent import (
     AGENT_MODE_AGENT,
     AGENT_MODES,
@@ -236,6 +236,41 @@ async def list_agent_models(body: AgentModelsRequest):
         raise HTTPException(status_code=400, detail="No models were returned by the provider.")
 
     return AgentModelsResponse(provider=provider, models=models)
+
+
+@app.post("/api/settings/test-connection", response_model=TestConnectionResponse)
+async def test_agent_connection(body: AgentModelsRequest):
+    """Test that the configured provider credentials are valid."""
+
+    provider = _normalize_provider(body.provider or settings.agent_provider)
+    if provider not in {PROVIDER_OPENAI, PROVIDER_ANTHROPIC}:
+        raise HTTPException(status_code=400, detail="Unsupported provider. Allowed values: openai, anthropic.")
+
+    api_base = (body.api_base or settings.agent_api_base or "").strip()
+    api_key = (body.api_key or settings.agent_api_key or "").strip()
+    if not api_base:
+        raise HTTPException(status_code=400, detail="API base URL is required.")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API key is required.")
+
+    try:
+        if provider == PROVIDER_ANTHROPIC:
+            models = await _fetch_anthropic_models(api_base, api_key)
+        else:
+            models = await _fetch_openai_models(api_base, api_key)
+    except (httpx.HTTPError, httpx.TimeoutException) as exc:
+        raise HTTPException(status_code=400, detail=f"Connection failed: {exc}") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Connection failed: {exc}") from exc
+
+    label = "Anthropic" if provider == PROVIDER_ANTHROPIC else "OpenAI"
+    return TestConnectionResponse(
+        ok=True,
+        provider=provider,
+        message=f"Connected to {label} successfully. {len(models)} model(s) available.",
+    )
 
 
 # ── Env-file persistence helper ─────────────────────────────────────

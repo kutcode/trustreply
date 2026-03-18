@@ -9,6 +9,7 @@ import {
     importQAPairs,
     listCategories,
     getApiBaseHint,
+    getQAExportUrl,
 } from '@/lib/api';
 
 export default function AdminPage() {
@@ -28,6 +29,9 @@ export default function AdminPage() {
     const [formData, setFormData] = useState({ category: '', question: '', answer: '' });
     const [showNewCategoryInput, setShowNewCategoryInput] = useState(false);
     const [newCategoryName, setNewCategoryName] = useState('');
+
+    // Confirm action state
+    const [confirmAction, setConfirmAction] = useState(null);
 
     // Import state
     const [showImport, setShowImport] = useState(false);
@@ -117,16 +121,21 @@ export default function AdminPage() {
     };
 
     // Delete
-    const handleDelete = async (id) => {
-        if (!confirm('Delete this Q&A pair?')) return;
-        try {
-            await deleteQAPair(id);
-            showToast('🗑️ Deleted', 'success');
-            loadData();
-            loadCategories();
-        } catch (err) {
-            showToast('❌ Delete failed', 'error');
-        }
+    const handleDelete = (id) => {
+        setConfirmAction({
+            message: 'Delete this Q&A pair? This action cannot be undone.',
+            onConfirm: async () => {
+                setConfirmAction(null);
+                try {
+                    await deleteQAPair(id);
+                    showToast('🗑️ Deleted', 'success');
+                    loadData();
+                    loadCategories();
+                } catch (err) {
+                    showToast('❌ Delete failed', 'error');
+                }
+            },
+        });
     };
 
     // Edit
@@ -149,7 +158,11 @@ export default function AdminPage() {
         setImporting(true);
         try {
             const result = await importQAPairs(file);
-            showToast(`✅ Imported ${result.imported} Q&A pairs`, 'success');
+            const parts = [`Imported ${result.imported} Q&A pair(s)`];
+            if (result.duplicates > 0) {
+                parts.push(`skipped ${result.duplicates} duplicate(s)`);
+            }
+            showToast(`✅ ${parts.join(', ')}`, result.duplicates > 0 ? 'info' : 'success');
             if (result.errors?.length) {
                 showToast(`⚠️ ${result.errors.length} row(s) had errors`, 'error');
             }
@@ -258,6 +271,13 @@ export default function AdminPage() {
                 <button className="btn btn-secondary" onClick={() => setShowImport(true)}>
                     📥 Import
                 </button>
+                <a
+                    href={getQAExportUrl('csv', categoryFilter)}
+                    className="btn btn-secondary"
+                    download
+                >
+                    📤 Export
+                </a>
             </div>
 
             {/* Table */}
@@ -414,6 +434,25 @@ export default function AdminPage() {
                                 </button>
                             </div>
                         </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Confirm Modal */}
+            {confirmAction && (
+                <div className="modal-overlay" onClick={() => setConfirmAction(null)}>
+                    <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '420px' }}>
+                        <div className="modal-header">
+                            <h2>Confirm</h2>
+                            <button className="modal-close" onClick={() => setConfirmAction(null)}>×</button>
+                        </div>
+                        <p style={{ color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
+                            {confirmAction.message}
+                        </p>
+                        <div className="modal-actions">
+                            <button className="btn btn-secondary" onClick={() => setConfirmAction(null)}>Cancel</button>
+                            <button className="btn btn-danger" onClick={confirmAction.onConfirm}>Delete</button>
+                        </div>
                     </div>
                 </div>
             )}

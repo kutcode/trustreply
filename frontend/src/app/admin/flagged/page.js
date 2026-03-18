@@ -27,6 +27,7 @@ export default function FlaggedPage() {
     const [newCategoryName, setNewCategoryName] = useState('');
     const [syncing, setSyncing] = useState(false);
     const [selectedIds, setSelectedIds] = useState([]);
+    const [confirmAction, setConfirmAction] = useState(null);
 
     const showToast = (message, type = 'info') => {
         setToast({ message, type });
@@ -259,7 +260,16 @@ export default function FlaggedPage() {
                     </span>
                     <button
                         className="btn btn-sm btn-secondary"
-                        onClick={handleBulkDismiss}
+                        onClick={() => {
+                            if (selectedIds.length === 0) return;
+                            setConfirmAction({
+                                message: `Dismiss ${selectedIds.length} selected question(s)? This cannot be undone.`,
+                                onConfirm: async () => {
+                                    setConfirmAction(null);
+                                    await handleBulkDismiss();
+                                },
+                            });
+                        }}
                         disabled={selectedIds.length === 0}
                     >
                         Dismiss selected
@@ -381,6 +391,25 @@ export default function FlaggedPage() {
                             : 'No flagged questions found'}
                     </div>
                     <p>Questions that can&apos;t be matched will appear here after processing documents.</p>
+                </div>
+            )}
+
+            {/* Confirm Modal */}
+            {confirmAction && (
+                <div className="modal-overlay" onClick={() => setConfirmAction(null)}>
+                    <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '420px' }}>
+                        <div className="modal-header">
+                            <h2>Confirm</h2>
+                            <button className="modal-close" onClick={() => setConfirmAction(null)}>×</button>
+                        </div>
+                        <p style={{ color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
+                            {confirmAction.message}
+                        </p>
+                        <div className="modal-actions">
+                            <button className="btn btn-secondary" onClick={() => setConfirmAction(null)}>Cancel</button>
+                            <button className="btn btn-danger" onClick={confirmAction.onConfirm}>Dismiss</button>
+                        </div>
+                    </div>
                 </div>
             )}
 

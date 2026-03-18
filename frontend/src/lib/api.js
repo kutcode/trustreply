@@ -259,6 +259,28 @@ export async function listAgentModels({
     return res.json();
 }
 
+export async function testAgentConnection({
+    provider = null,
+    apiBase = '',
+    apiKey = '',
+} = {}) {
+    const payload = {};
+    if (provider) payload.provider = provider;
+    if (apiBase) payload.api_base = apiBase;
+    if (apiKey) payload.api_key = apiKey;
+
+    const res = await apiFetch('/api/settings/test-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Connection test failed');
+    }
+    return res.json();
+}
+
 export async function troubleshootDocument(
     file,
     {
@@ -363,6 +385,13 @@ export async function importQAPairs(file) {
         throw new Error(err.detail || 'Import failed');
     }
     return res.json();
+}
+
+export function getQAExportUrl(format = 'csv', category = '') {
+    const base = resolvedApiBase || normalizeBase(CONFIGURED_API_BASE || getDiscoveryBases()[0]);
+    const params = new URLSearchParams({ format });
+    if (category) params.set('category', category);
+    return `${base}/api/qa/export?${params}`;
 }
 
 export async function listCategories() {
