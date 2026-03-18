@@ -5,6 +5,7 @@ import {
     listFlaggedQuestions,
     resolveFlaggedQuestion,
     dismissFlaggedQuestion,
+    dismissFlaggedQuestionsBulk,
     listCategories,
     getFlaggedExportUrl,
     syncFlaggedQuestions,
@@ -25,6 +26,7 @@ export default function FlaggedPage() {
     const [showNewCategoryInput, setShowNewCategoryInput] = useState(false);
     const [newCategoryName, setNewCategoryName] = useState('');
     const [syncing, setSyncing] = useState(false);
+    const [selectedIds, setSelectedIds] = useState([]);
 
     const showToast = (message, type = 'info') => {
         setToast({ message, type });
@@ -36,8 +38,11 @@ export default function FlaggedPage() {
             const resolved =
                 filter === 'all' ? null : filter === 'resolved' ? true : false;
             const data = await listFlaggedQuestions({ resolved });
-            setFlagged(data.items || []);
+            const items = data.items || [];
+            setFlagged(items);
             setTotal(data.total || 0);
+            const unresolvedIds = new Set(items.filter((item) => !item.resolved).map((item) => item.id));
+            setSelectedIds((current) => current.filter((id) => unresolvedIds.has(id)));
         } catch (err) {
             showToast('Failed to load flagged questions', 'error');
         }
@@ -113,10 +118,51 @@ export default function FlaggedPage() {
         const target = flagged.find((item) => item.id === id);
         try {
             await dismissFlaggedQuestion(id);
+            setSelectedIds((current) => current.filter((selectedId) => selectedId !== id));
             showToast(`Dismissed ${target?.occurrence_count || 1} occurrence(s)`, 'info');
             loadData();
         } catch (err) {
             showToast('❌ Failed to dismiss', 'error');
+        }
+    };
+
+    const unresolvedVisibleIds = flagged.filter((item) => !item.resolved).map((item) => item.id);
+    const allVisibleUnresolvedSelected =
+        unresolvedVisibleIds.length > 0 && unresolvedVisibleIds.every((id) => selectedIds.includes(id));
+
+    const handleToggleSelectAll = () => {
+        if (allVisibleUnresolvedSelected) {
+            setSelectedIds((current) => current.filter((id) => !unresolvedVisibleIds.includes(id)));
+            return;
+        }
+        setSelectedIds((current) => {
+            const next = new Set(current);
+            unresolvedVisibleIds.forEach((id) => next.add(id));
+            return Array.from(next);
+        });
+    };
+
+    const handleToggleRowSelection = (id, checked) => {
+        setSelectedIds((current) => {
+            if (checked) {
+                return current.includes(id) ? current : [...current, id];
+            }
+            return current.filter((selectedId) => selectedId !== id);
+        });
+    };
+
+    const handleBulkDismiss = async () => {
+        if (selectedIds.length === 0) return;
+        try {
+            const result = await dismissFlaggedQuestionsBulk(selectedIds);
+            setSelectedIds([]);
+            showToast(
+                `Dismissed ${result.dismissed_occurrences} occurrence(s) across ${result.dismissed_groups} question group(s).`,
+                'info',
+            );
+            loadData();
+        } catch (err) {
+            showToast(`❌ ${err.message}`, 'error');
         }
     };
 
@@ -198,6 +244,29 @@ export default function FlaggedPage() {
                 </button>
             </div>
 
+            {unresolvedVisibleIds.length > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer', fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+                        <input
+                            type="checkbox"
+                            checked={allVisibleUnresolvedSelected}
+                            onChange={handleToggleSelectAll}
+                        />
+                        Select all shown
+                    </label>
+                    <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+                        {selectedIds.length} selected
+                    </span>
+                    <button
+                        className="btn btn-sm btn-secondary"
+                        onClick={handleBulkDismiss}
+                        disabled={selectedIds.length === 0}
+                    >
+                        Dismiss selected
+                    </button>
+                </div>
+            )}
+
             <div style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginBottom: '1.25rem' }}>
                 Export this list as a simple `category,question,answer` CSV, fill in the blank `category` and `answer` cells, then import it from the Knowledge Base page. After import, use `Sync with KB` to clear any newly answered items from this list.
             </div>
@@ -208,7 +277,16 @@ export default function FlaggedPage() {
                     {flagged.map((fq) => (
                         <div key={fq.id} className="card">
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
-                                <div>
+                                <div style={{ display: 'flex', gap: '0.65rem', alignItems: 'flex-start' }}>
+                                    {!fq.resolved && (
+                                        <input
+                                            type="checkbox"
+                                            checked={selectedIds.includes(fq.id)}
+                                            onChange={(e) => handleToggleRowSelection(fq.id, e.target.checked)}
+                                            style={{ marginTop: '0.2rem' }}
+                                        />
+                                    )}
+                                    <div>
                                     <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>
                                         {fq.occurrence_count} occurrence{fq.occurrence_count === 1 ? '' : 's'}
                                         {fq.job_ids?.length > 0 && (
@@ -223,6 +301,7 @@ export default function FlaggedPage() {
                                         )}
                                     </div>
                                     <div style={{ fontWeight: 600, fontSize: '1rem' }}>{fq.extracted_question}</div>
+                                    </div>
                                 </div>
                                 <span className={`status-badge ${fq.resolved ? 'status-done' : 'status-pending'}`}>
                                     {fq.resolved ? 'Resolved' : 'Pending'}

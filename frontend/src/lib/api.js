@@ -237,6 +237,28 @@ export async function saveSettings(data) {
     return res.json();
 }
 
+export async function listAgentModels({
+    provider = null,
+    apiBase = '',
+    apiKey = '',
+} = {}) {
+    const payload = {};
+    if (provider) payload.provider = provider;
+    if (apiBase) payload.api_base = apiBase;
+    if (apiKey) payload.api_key = apiKey;
+
+    const res = await apiFetch('/api/settings/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to load provider models');
+    }
+    return res.json();
+}
+
 export async function troubleshootDocument(
     file,
     {
@@ -399,5 +421,18 @@ export async function resolveFlaggedQuestion(id, data) {
 export async function dismissFlaggedQuestion(id) {
     const res = await apiFetch(`/api/flagged/${id}/dismiss`, { method: 'POST' });
     if (!res.ok) throw new Error('Failed to dismiss');
+    return res.json();
+}
+
+export async function dismissFlaggedQuestionsBulk(ids) {
+    const res = await apiFetch('/api/flagged/dismiss-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to dismiss selected questions');
+    }
     return res.json();
 }
