@@ -1,0 +1,51 @@
+file,theme,layout_family,suggested_profile,total_prompts,expected_known_matches,expected_unknown_flags
+01_merged_row_block_operations.docx,Operations,merged_row_block,row_block_questionnaire,8,5,3
+02_four_column_metadata_continuity.docx,Business Continuity,four_column_metadata,default,8,5,3
+03_merged_row_block_operations.docx,Operations,merged_row_block,row_block_questionnaire,9,6,3
+04_numbered_paragraph_operations.docx,Operations,numbered_paragraph,default,12,7,5
+05_three_column_middle_security.docx,Security,three_column_middle,three_column_table,12,7,5
+06_three_column_middle_security.docx,Security,three_column_middle,three_column_table,12,7,5
+07_three_column_middle_continuity.docx,Business Continuity,three_column_middle,three_column_table,9,5,4
+08_numbered_paragraph_privacy.docx,Privacy,numbered_paragraph,default,13,7,6
+09_merged_row_block_continuity.docx,Business Continuity,merged_row_block,row_block_questionnaire,11,5,6
+10_four_column_metadata_operations.docx,Operations,four_column_metadata,default,10,4,6
+11_merged_row_block_vendor.docx,Vendor Management,merged_row_block,row_block_questionnaire,12,7,5
+12_merged_row_block_operations.docx,Operations,merged_row_block,row_block_questionnaire,11,6,5
+13_two_column_security.docx,Security,two_column,default,7,4,3
+14_numbered_paragraph_continuity.docx,Business Continuity,numbered_paragraph,default,10,7,3
+15_two_column_continuity.docx,Business Continuity,two_column,default,10,5,5
+16_four_column_metadata_continuity.docx,Business Continuity,four_column_metadata,default,8,4,4
+17_two_column_continuity.docx,Business Continuity,two_column,default,8,4,4
+18_merged_row_block_privacy.docx,Privacy,merged_row_block,row_block_questionnaire,12,7,5
+19_four_column_metadata_operations.docx,Operations,four_column_metadata,default,10,4,6
+20_four_column_metadata_operations.docx,Operations,four_column_metadata,default,7,4,3
+21_two_column_vendor.docx,Vendor Management,two_column,default,11,5,6
+22_four_column_metadata_privacy.docx,Privacy,four_column_metadata,default,9,4,5
+23_four_column_metadata_operations.docx,Operations,four_column_metadata,default,9,4,5
+24_merged_row_block_continuity.docx,Business Continuity,merged_row_block,row_block_questionnaire,7,4,3
+25_merged_row_block_operations.docx,Operations,merged_row_block,row_block_questionnaire,9,5,4
+26_three_column_middle_operations.docx,Operations,three_column_middle,three_column_table,8,5,3
+27_two_column_operations.docx,Operations,two_column,default,8,4,4
+28_four_column_metadata_security.docx,Security,four_column_metadata,default,9,4,5
+29_three_column_middle_security.docx,Security,three_column_middle,three_column_table,10,7,3
+30_merged_row_block_operations.docx,Operations,merged_row_block,row_block_questionnaire,9,5,4
+31_numbered_paragraph_vendor.docx,Vendor Management,numbered_paragraph,default,11,7,4
+32_merged_row_block_operations.docx,Operations,merged_row_block,row_block_questionnaire,10,7,3
+33_four_column_metadata_security.docx,Security,four_column_metadata,default,10,5,5
+34_three_column_middle_privacy.docx,Privacy,three_column_middle,three_column_table,11,5,6
+35_four_column_metadata_security.docx,Security,four_column_metadata,default,12,7,5
+36_merged_row_block_vendor.docx,Vendor Management,merged_row_block,row_block_questionnaire,11,5,6
+37_numbered_paragraph_vendor.docx,Vendor Management,numbered_paragraph,default,11,6,5
+38_merged_row_block_continuity.docx,Business Continuity,merged_row_block,row_block_questionnaire,12,6,6
+39_four_column_metadata_continuity.docx,Business Continuity,four_column_metadata,default,11,6,5
+40_merged_row_block_vendor.docx,Vendor Management,merged_row_block,row_block_questionnaire,10,5,5
+41_numbered_paragraph_continuity.docx,Business Continuity,numbered_paragraph,default,8,5,3
+42_merged_row_block_continuity.docx,Business Continuity,merged_row_block,row_block_questionnaire,9,6,3
+43_two_column_privacy.docx,Privacy,two_column,default,9,4,5
+44_numbered_paragraph_vendor.docx,Vendor Management,numbered_paragraph,default,11,5,6
+45_two_column_continuity.docx,Business Continuity,two_column,default,13,7,6
+46_two_column_continuity.docx,Business Continuity,two_column,default,13,7,6
+47_numbered_paragraph_vendor.docx,Vendor Management,numbered_paragraph,default,11,5,6
+48_two_column_continuity.docx,Business Continuity,two_column,default,10,5,5
+49_merged_row_block_vendor.docx,Vendor Management,merged_row_block,row_block_questionnaire,12,7,5
+50_four_column_metadata_operations.docx,Operations,four_column_metadata,default,9,5,4

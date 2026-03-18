@@ -15,9 +15,10 @@ The product approach is:
 
 ## What It Does
 
-- Upload `.docx` and `.pdf` questionnaires
-- Parse tables, row-block layouts, paragraphs, and several document profile variants
+- Upload `.docx`, `.pdf`, and `.csv` questionnaires
+- Parse tables, row-block layouts, paragraphs, CSV grids, and several document profile variants
 - Match questions against a Q&A knowledge base using sentence-transformer embeddings
+- Optionally run a two-stage AI agent workflow (Research Agent + Fill Agent) for context-aware answers
 - Write answers back into supported documents while preserving formatting where possible
 - Group repeated flagged questions so teams answer them once instead of many times
 - Export unresolved flagged questions as a simple `category,question,answer` CSV
@@ -25,6 +26,7 @@ The product approach is:
 - Sync flagged questions against newly imported knowledge-base answers
 - Run bulk uploads with batch summaries and downloadable batch ZIP outputs
 - Troubleshoot difficult files by comparing parser profiles before retrying
+- Run optional AI troubleshooting analysis with root-cause hints and trace logs
 
 ## Primary Use Cases
 
@@ -42,19 +44,22 @@ More examples are documented in [docs/USE_CASES.md](/Users/kutluhanbayram/Deskto
 ## Product Workflow
 
 1. Add approved Q&A pairs to the Knowledge Base.
-2. Upload one file or a batch of questionnaire documents.
+2. Upload one file or a batch of questionnaire documents or CSV questionnaires.
 3. TrustReply parses the document and matches questions to known answers.
-4. Matched answers are written into the output file.
-5. Unresolved questions are grouped in the Flagged Questions queue.
-6. Export missing questions as CSV, fill in answers, and re-import them.
-7. Sync flagged questions with the updated knowledge base.
+4. Optional agent mode can research context, fill unresolved answers, and flag uncertain prompts.
+5. Matched answers are written into the output file.
+6. Unresolved questions are grouped in the Flagged Questions queue.
+7. Export missing questions as CSV, fill in answers, and re-import them.
+8. Sync flagged questions with the updated knowledge base.
 
 ## Key Features
 
 - **Knowledge Base Management**: CRUD, categories, search, CSV/JSON import
 - **Semantic Matching**: embedding-based question matching for paraphrased prompts
-- **Parser Profiles**: multiple layout strategies for different document structures
-- **Troubleshooting**: compare parser profiles and extraction previews for problematic files
+- **AI Agent Mode**: default `agent` mode with contextual research/fill workflows
+- **Provider Model Discovery**: Settings can pull model dropdown options directly from OpenAI and Claude APIs
+- **Parser Profiles**: multiple layout strategies for document and CSV questionnaire structures
+- **Troubleshooting**: compare parser profiles plus optional AI diagnostics and trace output
 - **Human-in-the-loop Review**: grouped flagged questions, resolution flow, and KB sync
 - **Batch Processing**: upload up to 50 files in one batch, track per-file results, and download ZIP outputs
 - **Review Placeholders**: unresolved items are visibly marked in outputs instead of silently left blank
@@ -112,17 +117,67 @@ This starts:
 - frontend on `http://localhost:3000`
 - backend on `http://localhost:8000`
 
+## Agent Mode Setup
+
+Agent mode is optional and disabled by default.
+
+Set these backend environment variables to enable it:
+
+```bash
+QF_AGENT_ENABLED=true
+QF_AGENT_PROVIDER=openai
+QF_AGENT_API_BASE=https://api.openai.com/v1
+QF_AGENT_API_KEY=your_api_key
+QF_AGENT_MODEL=gpt-4.1-nano
+QF_AGENT_DEFAULT_MODE=agent
+```
+
+Optional tuning:
+
+```bash
+QF_AGENT_TIMEOUT_SECONDS=45
+QF_AGENT_MAX_QUESTIONS_PER_CALL=20
+QF_AGENT_MAX_CONTEXT_CHARS=6000
+```
+
+Notes:
+
+- Supported providers in Settings: OpenAI API and Claude API (Anthropic).
+- Parser profiles are still used to anchor exact question/answer placement in output documents.
+- Configure provider/base URL/model/key in the Settings page (keys are persisted in backend env settings).
+
+### Claude API (Anthropic)
+
+TrustReply also supports native Claude API settings:
+
+```bash
+QF_AGENT_PROVIDER=anthropic
+QF_AGENT_API_BASE=https://api.anthropic.com/v1
+QF_AGENT_API_KEY=your_anthropic_api_key
+QF_AGENT_MODEL=claude-3-5-haiku-latest
+QF_AGENT_DEFAULT_MODE=agent
+```
+
+Docker quick-start without saving your key in source:
+
+```bash
+export OPENAI_API_KEY=your_api_key
+export QF_AGENT_ENABLED=true
+docker compose up --build
+```
+
 ## Example Data
 
 The repository includes example content under [test-data](/Users/kutluhanbayram/Desktop/AI%20QUESTIONNAIRE%20FILLER%20-%20DOCS/test-data), including:
 
 - starter knowledge-base CSVs
 - example questionnaire files
-- generated parser stress-test corpora
+- generated parser stress-test corpora for DOCX and CSV uploads
 
 ## Current Limitations
 
 - PDF handling is more limited than DOCX write-back
+- CSV support is designed for tabular questionnaire layouts rather than arbitrary spreadsheet-style workbooks
 - scanned PDFs still need OCR support for best results
 - parser coverage is good for many common layouts, but not every possible enterprise form
 - the current default database is SQLite, which is ideal for local use and prototypes but not long-term multi-tenant production

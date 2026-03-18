@@ -18,6 +18,7 @@ TrustReply helps answer these using an approved answer library so teams do not r
 Procurement and third-party risk teams often send very similar forms in different document formats. TrustReply can:
 
 - parse common questionnaire layouts
+- handle tabular CSV questionnaires alongside document uploads
 - reuse approved vendor-risk answers
 - flag missing questions for follow-up
 - group repeated unresolved prompts so they are answered once
@@ -70,6 +71,6 @@ The repository includes generated document corpora so maintainers can test:
 
 - common layouts already expected to work
 - mixed-coverage documents with some known and some unknown answers
-- parser behavior across row-block, multi-column, and paragraph-based layouts
+- parser behavior across row-block, multi-column, paragraph-based, and CSV-based layouts
 
 This makes TrustReply useful both as an end-user product and as a platform contributors can improve.
