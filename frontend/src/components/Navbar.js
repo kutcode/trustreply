@@ -11,6 +11,7 @@ export default function Navbar() {
         { href: '/admin', label: 'Knowledge Base' },
         { href: '/admin/flagged', label: 'Flagged Questions' },
         { href: '/troubleshoot', label: 'Troubleshooting' },
+        { href: '/settings', label: 'Settings' },
     ];
 
     return (

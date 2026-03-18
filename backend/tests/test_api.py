@@ -28,6 +28,9 @@ async def test_get_settings(client):
     assert "default_parser_profile" in data
     assert data["max_bulk_files"] == 50
     assert isinstance(data["parser_profiles"], list)
+    assert "agent_available" in data
+    assert "agent_modes" in data
+    assert isinstance(data["agent_modes"], list)
 
 
 # ── Q&A CRUD ──────────────────────────────────────────────────────
@@ -185,6 +188,55 @@ async def test_upload_invalid_parser_profile(client, make_docx):
     assert "Unknown parser profile" in res.json()["detail"]
 
 
+async def test_upload_invalid_agent_mode(client, make_docx):
+    path = make_docx([("What is your company name?", "")])
+    with open(path, "rb") as f:
+        files = {"file": ("questionnaire.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+        res = await client.post("/api/upload", files=files, data={"agent_mode": "invalid-mode"})
+    assert res.status_code == 200
+    assert res.json()["agent_mode"] == "off"
+
+
+async def test_upload_agent_mode_requires_config(client, make_docx):
+    path = make_docx([("What is your company name?", "")])
+    with open(path, "rb") as f:
+        files = {"file": ("questionnaire.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+        res = await client.post("/api/upload", files=files, data={"agent_mode": "agent"})
+    assert res.status_code == 200
+    # Agent mode is stored as requested; availability is checked during background processing.
+    assert res.json()["agent_mode"] == "agent"
+
+
+async def test_upload_agent_mode_backward_compat_assist(client, make_docx):
+    """Old 'assist' mode is aliased to 'agent' for backward compatibility."""
+    path = make_docx([("What is your company name?", "")])
+    with open(path, "rb") as f:
+        files = {"file": ("questionnaire.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+        res = await client.post("/api/upload", files=files, data={"agent_mode": "assist"})
+    assert res.status_code == 200
+    assert res.json()["agent_mode"] == "agent"
+
+
+async def test_upload_agent_mode_accepts_custom_runtime_config(client, make_docx):
+    path = make_docx([("What is your company name?", "")])
+    with open(path, "rb") as f:
+        files = {"file": ("questionnaire.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+        res = await client.post(
+            "/api/upload",
+            files=files,
+            data={
+                "agent_mode": "agent",
+                "agent_provider": "ollama",
+                "agent_api_base": "http://127.0.0.1:11434/v1",
+                "agent_api_key": "local",
+                "agent_model": "qwen2.5:7b",
+            },
+        )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["agent_mode"] == "agent"
+
+
 async def test_upload_docx_creates_job(client, make_docx):
     path = make_docx([("What is your company name?", "")])
     with open(path, "rb") as f:
@@ -195,8 +247,23 @@ async def test_upload_docx_creates_job(client, make_docx):
     assert data["status"] == "pending"
     assert data["original_filename"] == "questionnaire.docx"
     assert data["parser_profile_name"] == "default"
+    assert data["agent_mode"] == "off"
     assert data["batch_id"] is None
     assert "id" in data
+
+
+async def test_upload_csv_creates_job(client, make_csv):
+    path = make_csv([
+        ["Question", "Answer"],
+        ["What is your company name?", ""],
+    ])
+    with open(path, "rb") as f:
+        files = {"file": ("questionnaire.csv", f, "text/csv")}
+        res = await client.post("/api/upload", files=files)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "pending"
+    assert data["original_filename"] == "questionnaire.csv"
 
 
 async def test_troubleshoot_docx_returns_profile_diagnostics(client, tmp_path):
@@ -239,6 +306,45 @@ async def test_troubleshoot_docx_reports_no_questions_found(client, make_docx):
     assert data["recommended_profile"] is None
     assert "no parser profile" in data["recommendation_reason"].lower()
     assert any("no parser profile found any questions" in hint.lower() for hint in data["hints"])
+
+
+async def test_troubleshoot_csv_returns_profile_diagnostics(client, make_csv):
+    path = make_csv([
+        ["Domain", "Question", "Response"],
+        ["Security", "Describe your incident response process.", ""],
+    ], filename="troubleshoot.csv")
+
+    with open(path, "rb") as f:
+        files = {"file": ("troubleshoot.csv", f, "text/csv")}
+        res = await client.post("/api/troubleshoot", files=files)
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data["filename"] == "troubleshoot.csv"
+    assert data["file_type"] == "csv"
+    profiles = {profile["profile_name"]: profile for profile in data["profiles"]}
+    assert profiles["default"]["question_count"] == 1
+
+
+async def test_troubleshoot_agent_analysis_skipped_when_unconfigured(client, make_csv):
+    path = make_csv(
+        [
+            ["Domain", "Question", "Response"],
+            ["Security", "Describe your incident response process.", ""],
+        ],
+        filename="agent_troubleshoot.csv",
+    )
+    with open(path, "rb") as f:
+        files = {"file": ("agent_troubleshoot.csv", f, "text/csv")}
+        res = await client.post(
+            "/api/troubleshoot",
+            files=files,
+            data={"analyze_with_agent": "true"},
+        )
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data["agent_analysis"] is None
 
 
 async def test_bulk_upload_creates_grouped_jobs(client, make_docx):

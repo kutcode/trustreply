@@ -94,11 +94,39 @@ export function getApiBaseHint() {
  * @param {File} file
  * @returns {Promise<object>} Job object
  */
-export async function uploadDocument(file, parserProfile = null) {
+export async function uploadDocument(
+    file,
+    parserProfile = null,
+    {
+        agentMode = null,
+        agentInstructions = '',
+        agentConfig = null,
+    } = {},
+) {
     const formData = new FormData();
     formData.append('file', file);
     if (parserProfile) {
         formData.append('parser_profile', parserProfile);
+    }
+    if (agentMode) {
+        formData.append('agent_mode', agentMode);
+    }
+    if (agentInstructions && agentInstructions.trim()) {
+        formData.append('agent_instructions', agentInstructions.trim());
+    }
+    if (agentConfig) {
+        if (agentConfig.provider) {
+            formData.append('agent_provider', agentConfig.provider);
+        }
+        if (agentConfig.apiBase) {
+            formData.append('agent_api_base', agentConfig.apiBase);
+        }
+        if (agentConfig.apiKey) {
+            formData.append('agent_api_key', agentConfig.apiKey);
+        }
+        if (agentConfig.model) {
+            formData.append('agent_model', agentConfig.model);
+        }
     }
     const res = await apiFetch('/api/upload', {
         method: 'POST',
@@ -111,13 +139,41 @@ export async function uploadDocument(file, parserProfile = null) {
     return res.json();
 }
 
-export async function uploadDocuments(files, parserProfile = null) {
+export async function uploadDocuments(
+    files,
+    parserProfile = null,
+    {
+        agentMode = null,
+        agentInstructions = '',
+        agentConfig = null,
+    } = {},
+) {
     const formData = new FormData();
     for (const file of files) {
         formData.append('files', file);
     }
     if (parserProfile) {
         formData.append('parser_profile', parserProfile);
+    }
+    if (agentMode) {
+        formData.append('agent_mode', agentMode);
+    }
+    if (agentInstructions && agentInstructions.trim()) {
+        formData.append('agent_instructions', agentInstructions.trim());
+    }
+    if (agentConfig) {
+        if (agentConfig.provider) {
+            formData.append('agent_provider', agentConfig.provider);
+        }
+        if (agentConfig.apiBase) {
+            formData.append('agent_api_base', agentConfig.apiBase);
+        }
+        if (agentConfig.apiKey) {
+            formData.append('agent_api_key', agentConfig.apiKey);
+        }
+        if (agentConfig.model) {
+            formData.append('agent_model', agentConfig.model);
+        }
     }
     const res = await apiFetch('/api/upload/bulk', {
         method: 'POST',
@@ -168,9 +224,49 @@ export async function getSettings() {
     return res.json();
 }
 
-export async function troubleshootDocument(file) {
+export async function saveSettings(data) {
+    const res = await apiFetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to save settings');
+    }
+    return res.json();
+}
+
+export async function troubleshootDocument(
+    file,
+    {
+        analyzeWithAgent = false,
+        agentInstructions = '',
+        agentConfig = null,
+    } = {},
+) {
     const formData = new FormData();
     formData.append('file', file);
+    if (analyzeWithAgent) {
+        formData.append('analyze_with_agent', 'true');
+    }
+    if (agentInstructions && agentInstructions.trim()) {
+        formData.append('agent_instructions', agentInstructions.trim());
+    }
+    if (agentConfig) {
+        if (agentConfig.provider) {
+            formData.append('agent_provider', agentConfig.provider);
+        }
+        if (agentConfig.apiBase) {
+            formData.append('agent_api_base', agentConfig.apiBase);
+        }
+        if (agentConfig.apiKey) {
+            formData.append('agent_api_key', agentConfig.apiKey);
+        }
+        if (agentConfig.model) {
+            formData.append('agent_model', agentConfig.model);
+        }
+    }
     const res = await apiFetch('/api/troubleshoot', {
         method: 'POST',
         body: formData,

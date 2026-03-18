@@ -55,6 +55,12 @@ class JobResponse(BaseModel):
     parse_stats: dict | None
     fallback_recommended: bool
     fallback_reason: str | None
+    agent_mode: str | None
+    agent_status: str | None
+    agent_summary: str | None
+    agent_trace: list[dict] | None
+    agent_error: str | None
+    agent_model: str | None
     uploaded_at: datetime.datetime
     completed_at: datetime.datetime | None
 
@@ -116,10 +122,26 @@ class AppSettingsResponse(BaseModel):
     default_parser_profile: str
     max_bulk_files: int
     parser_profiles: list[dict]
+    agent_enabled: bool
+    agent_provider: str
+    agent_api_base: str
+    agent_available: bool
+    agent_model: str
+    agent_default_mode: str
+    agent_modes: list[dict]
 
 
 class AppSettingsUpdate(BaseModel):
+    agent_enabled: bool | None = None
+    agent_provider: str | None = None
+    agent_api_base: str | None = None
+    agent_api_key: str | None = None
+    agent_model: str | None = None
+    agent_timeout_seconds: int | None = Field(None, ge=1, le=300)
+    agent_default_mode: str | None = None
+    agent_max_questions_per_call: int | None = Field(None, ge=1, le=100)
     similarity_threshold: float | None = Field(None, ge=0.0, le=1.0)
+    default_parser_profile: str | None = None
 
 
 # ── Troubleshooting ────────────────────────────────────────────────
@@ -144,3 +166,4 @@ class TroubleshootResponse(BaseModel):
     recommendation_reason: str
     hints: list[str]
     profiles: list[TroubleshootProfileResult]
+    agent_analysis: dict | None = None

@@ -1,8 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
-import { troubleshootDocument } from '@/lib/api';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { getSettings, troubleshootDocument } from '@/lib/api';
 
 const FALLBACK_REASON_LABELS = {
     no_questions_found: 'No questions found',
@@ -20,12 +20,25 @@ function humanizeFallbackReason(reason) {
     return FALLBACK_REASON_LABELS[reason] || reason.replaceAll('_', ' ');
 }
 
+function formatThinkingLine(event, prefix = '') {
+    const timestamp = event?.timestamp || '--';
+    const step = event?.step || 'agent';
+    const status = event?.status || 'info';
+    const message = event?.message || '';
+    return `[${timestamp}] ${prefix}${step}:${status} ${message}`.trim();
+}
+
 export default function TroubleshootPage() {
     const [file, setFile] = useState(null);
     const [dragover, setDragover] = useState(false);
     const [analyzing, setAnalyzing] = useState(false);
     const [result, setResult] = useState(null);
+    const [agentAvailable, setAgentAvailable] = useState(false);
+    const [analyzeWithAgent, setAnalyzeWithAgent] = useState(false);
+    const [agentInstructions, setAgentInstructions] = useState('');
+    const [thinkingLines, setThinkingLines] = useState([]);
     const [toast, setToast] = useState(null);
+    const thinkingTickerRef = useRef(null);
 
     const recommendedProfile = useMemo(() => {
         if (!result?.recommended_profile) return null;
@@ -40,15 +53,41 @@ export default function TroubleshootPage() {
         setTimeout(() => setToast(null), 4000);
     };
 
+    useEffect(() => {
+        getSettings()
+            .then((data) => {
+                setAgentAvailable(Boolean(data.agent_available));
+            })
+            .catch(() => { });
+    }, []);
+
+    useEffect(() => () => {
+        if (thinkingTickerRef.current) {
+            clearInterval(thinkingTickerRef.current);
+            thinkingTickerRef.current = null;
+        }
+    }, []);
+
+    const thinkingText = useMemo(() => {
+        if (thinkingLines.length > 0) {
+            return thinkingLines.join('\n');
+        }
+        if (result?.agent_analysis?.status === 'skipped') {
+            return 'Agent diagnostics skipped. Configure AI provider in Settings to run model-level troubleshooting.';
+        }
+        return 'No AI troubleshooting logs yet. Analyze a file to view model thinking.';
+    }, [thinkingLines, result]);
+
     const validateAndSetFile = (candidate) => {
         if (!candidate) return;
         const ext = candidate.name.split('.').pop().toLowerCase();
-        if (!['docx', 'pdf'].includes(ext)) {
-            showToast('Only .docx and .pdf files are supported for troubleshooting.', 'error');
+        if (!['docx', 'pdf', 'csv'].includes(ext)) {
+            showToast('Only .docx, .pdf, and .csv files are supported for troubleshooting.', 'error');
             return;
         }
         setFile(candidate);
         setResult(null);
+        setThinkingLines([]);
     };
 
     const handleFileChange = (e) => {
@@ -70,12 +109,72 @@ export default function TroubleshootPage() {
 
     const handleAnalyze = async () => {
         if (!file) return;
+        if (thinkingTickerRef.current) {
+            clearInterval(thinkingTickerRef.current);
+            thinkingTickerRef.current = null;
+        }
         setAnalyzing(true);
+        const startedAt = new Date().toISOString();
+        setThinkingLines([
+            formatThinkingLine({ timestamp: startedAt, step: 'analysis', status: 'running', message: `Queued diagnostics for ${file.name}` }),
+            formatThinkingLine({ timestamp: startedAt, step: 'analysis', status: 'running', message: 'Loading document and parser profiles.' }),
+        ]);
+
+        const pulseMessages = analyzeWithAgent
+            ? [
+                'Comparing parser profile extraction quality.',
+                'Running agent diagnostics for likely root causes.',
+                'Compiling remediation guidance.',
+            ]
+            : [
+                'Comparing parser profile extraction quality.',
+                'Scoring profile confidence and coverage.',
+            ];
+        let pulseIndex = 0;
+        thinkingTickerRef.current = setInterval(() => {
+            const now = new Date().toISOString();
+            const message = pulseMessages[pulseIndex % pulseMessages.length];
+            pulseIndex += 1;
+            setThinkingLines((prev) => [
+                ...prev.slice(-140),
+                formatThinkingLine({ timestamp: now, step: 'analysis', status: 'running', message }),
+            ]);
+        }, 1300);
+
         try {
-            const data = await troubleshootDocument(file);
+            const data = await troubleshootDocument(file, {
+                analyzeWithAgent,
+                agentInstructions,
+            });
+            if (thinkingTickerRef.current) {
+                clearInterval(thinkingTickerRef.current);
+                thinkingTickerRef.current = null;
+            }
             setResult(data);
+            setThinkingLines((prev) => {
+                const lines = [...prev];
+                const now = new Date().toISOString();
+                lines.push(formatThinkingLine({ timestamp: now, step: 'analysis', status: 'completed', message: 'Parser diagnostics completed.' }));
+                if (data.agent_analysis && Array.isArray(data.agent_analysis.trace) && data.agent_analysis.trace.length > 0) {
+                    for (const event of data.agent_analysis.trace) {
+                        lines.push(formatThinkingLine(event));
+                    }
+                } else if (data.agent_analysis?.summary) {
+                    lines.push(formatThinkingLine({ timestamp: now, step: 'agent', status: data.agent_analysis.status || 'info', message: data.agent_analysis.summary }));
+                }
+                return lines.slice(-200);
+            });
             showToast('Diagnostics complete. Review the recommended parser below.', 'success');
         } catch (err) {
+            if (thinkingTickerRef.current) {
+                clearInterval(thinkingTickerRef.current);
+                thinkingTickerRef.current = null;
+            }
+            const now = new Date().toISOString();
+            setThinkingLines((prev) => [
+                ...prev.slice(-140),
+                formatThinkingLine({ timestamp: now, step: 'analysis', status: 'error', message: err.message || 'Troubleshooting failed.' }),
+            ]);
             showToast(err.message || 'Troubleshooting failed', 'error');
         } finally {
             setAnalyzing(false);
@@ -94,8 +193,8 @@ export default function TroubleshootPage() {
                 <h1>Troubleshooting</h1>
                 <p>
                     Drop in a problematic questionnaire and we&apos;ll run it through each parser profile, show what
-                    was extracted, and recommend the best retry path. This tool is deterministic and uses the same
-                    parser stack as normal uploads.
+                    was extracted, and recommend the best retry path. Base diagnostics are deterministic and use the
+                    same parser stack as normal uploads, and you can optionally run AI troubleshooting for deeper analysis.
                 </p>
             </div>
 
@@ -107,7 +206,7 @@ export default function TroubleshootPage() {
             >
                 <input
                     type="file"
-                    accept=".docx,.pdf"
+                    accept=".docx,.pdf,.csv"
                     onChange={handleFileChange}
                     id="troubleshoot-file-upload"
                 />
@@ -118,7 +217,7 @@ export default function TroubleshootPage() {
                 <div className="upload-zone-subtitle">
                     {file
                         ? `${(file.size / 1024).toFixed(1)} KB — Ready for diagnostics`
-                        : 'Supports .docx and .pdf files'}
+                        : 'Supports .docx, .pdf, and .csv files'}
                 </div>
             </div>
 
@@ -129,6 +228,47 @@ export default function TroubleshootPage() {
                     </button>
                 </div>
             )}
+
+            <div className="card" style={{ marginTop: '1rem' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.8rem', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                        <input
+                            type="checkbox"
+                            checked={analyzeWithAgent}
+                            onChange={(e) => setAnalyzeWithAgent(e.target.checked)}
+                        />
+                        Run agent diagnostics
+                    </label>
+                    {!agentAvailable && analyzeWithAgent && (
+                        <span style={{ color: 'var(--warning)', fontSize: '0.82rem' }}>
+                            Agent not configured.{' '}
+                            <Link
+                                href="/settings"
+                                style={{
+                                    color: 'var(--warning)',
+                                    textDecoration: 'underline',
+                                    textUnderlineOffset: '0.15rem',
+                                }}
+                            >
+                                Go to Settings
+                            </Link>{' '}
+                            to set up your AI provider.
+                        </span>
+                    )}
+                </div>
+                {analyzeWithAgent && (
+                    <div style={{ marginTop: '0.9rem' }}>
+                        <label className="form-label">Agent Troubleshooting Notes (Optional)</label>
+                        <textarea
+                            className="form-textarea"
+                            rows={3}
+                            value={agentInstructions}
+                            onChange={(e) => setAgentInstructions(e.target.value)}
+                            placeholder="Example: focus on why valid questions are being missed and suggest safe defaults."
+                        />
+                    </div>
+                )}
+            </div>
 
             {analyzing && (
                 <div className="card" style={{ marginTop: '1.5rem' }}>
@@ -201,6 +341,48 @@ export default function TroubleshootPage() {
                             </div>
                         )}
                     </div>
+
+                    {result.agent_analysis && (
+                        <div className="card" style={{ marginTop: '1rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '0.6rem' }}>
+                                <div style={{ fontWeight: 700 }}>Agent Troubleshooting</div>
+                                <span className={`status-badge ${
+                                    result.agent_analysis.status === 'error'
+                                        ? 'status-error'
+                                        : result.agent_analysis.status === 'completed'
+                                            ? 'status-done'
+                                            : 'status-pending'
+                                }`}>
+                                    {result.agent_analysis.status || 'unknown'}
+                                </span>
+                            </div>
+                            {result.agent_analysis.summary && (
+                                <div style={{ marginBottom: '0.7rem', color: 'var(--text-secondary)' }}>
+                                    {result.agent_analysis.summary}
+                                </div>
+                            )}
+                            {Array.isArray(result.agent_analysis.root_causes) && result.agent_analysis.root_causes.length > 0 && (
+                                <div style={{ marginBottom: '0.7rem' }}>
+                                    <div style={{ fontWeight: 700, marginBottom: '0.35rem' }}>Likely root causes</div>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', color: 'var(--text-secondary)' }}>
+                                        {result.agent_analysis.root_causes.map((cause, idx) => (
+                                            <div key={`cause-${idx}`}>• {cause}</div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                            {Array.isArray(result.agent_analysis.next_steps) && result.agent_analysis.next_steps.length > 0 && (
+                                <div style={{ marginBottom: '0.7rem' }}>
+                                    <div style={{ fontWeight: 700, marginBottom: '0.35rem' }}>Recommended next steps</div>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', color: 'var(--text-secondary)' }}>
+                                        {result.agent_analysis.next_steps.map((step, idx) => (
+                                            <div key={`step-${idx}`}>• {step}</div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1.5rem' }}>
                         {result.profiles.map((profile) => {
@@ -311,6 +493,25 @@ export default function TroubleshootPage() {
                     </div>
                 </>
             )}
+
+            <div className="card" style={{ marginTop: '2rem' }}>
+                <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>AI Model Thinking</div>
+                <div style={{ color: 'var(--text-muted)', fontSize: '0.84rem', marginBottom: '0.6rem' }}>
+                    Live analysis log while troubleshooting runs.
+                </div>
+                <textarea
+                    className="form-textarea"
+                    readOnly
+                    value={thinkingText}
+                    rows={12}
+                    style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '0.78rem',
+                        lineHeight: 1.45,
+                        whiteSpace: 'pre',
+                    }}
+                />
+            </div>
         </div>
     );
 }

@@ -13,8 +13,21 @@ import {
   getSettings,
 } from '@/lib/api';
 
-const SUPPORTED_EXTENSIONS = new Set(['docx', 'pdf']);
+const SUPPORTED_EXTENSIONS = new Set(['docx', 'pdf', 'csv']);
 const FALLBACK_MAX_BULK_FILES = 50;
+
+const AGENT_MODES = [
+  {
+    name: 'off',
+    label: 'Semantic Only',
+    description: 'Use only knowledge-base semantic matching.',
+  },
+  {
+    name: 'agent',
+    label: 'Agent',
+    description: 'AI agent reviews all questions using document context and KB. Can override semantic matches with better context-aware answers.',
+  },
+];
 
 function isFinishedStatus(status) {
   return status === 'done' || status === 'error';
@@ -51,6 +64,14 @@ function getJobStatusMeta(job) {
   return { className: 'done', label: 'done' };
 }
 
+function formatThinkingLine(event, prefix = '') {
+  const timestamp = event?.timestamp || '--';
+  const step = event?.step || 'agent';
+  const status = event?.status || 'info';
+  const message = event?.message || '';
+  return `[${timestamp}] ${prefix}${step}:${status} ${message}`.trim();
+}
+
 export default function UploadPage() {
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [dragover, setDragover] = useState(false);
@@ -58,11 +79,14 @@ export default function UploadPage() {
   const [currentJob, setCurrentJob] = useState(null);
   const [currentBatch, setCurrentBatch] = useState(null);
   const [jobs, setJobs] = useState([]);
-  const [parserProfiles, setParserProfiles] = useState([]);
   const [selectedParserProfile, setSelectedParserProfile] = useState('default');
+  const [selectedAgentMode, setSelectedAgentMode] = useState('off');
+  const [agentInstructions, setAgentInstructions] = useState('');
+  const [agentAvailable, setAgentAvailable] = useState(false);
   const [maxBulkFiles, setMaxBulkFiles] = useState(FALLBACK_MAX_BULK_FILES);
   const [toast, setToast] = useState(null);
   const pollRef = useRef(null);
+  const thinkingRef = useRef(null);
 
   const showToast = useCallback((message, type = 'info') => {
     setToast({ message, type });
@@ -89,8 +113,9 @@ export default function UploadPage() {
   useEffect(() => {
     getSettings()
       .then((data) => {
-        setParserProfiles(data.parser_profiles || []);
         setSelectedParserProfile(data.default_parser_profile || 'default');
+        setSelectedAgentMode(data.agent_default_mode || 'off');
+        setAgentAvailable(Boolean(data.agent_available));
         setMaxBulkFiles(data.max_bulk_files || FALLBACK_MAX_BULK_FILES);
       })
       .catch(() => { });
@@ -105,16 +130,16 @@ export default function UploadPage() {
         stopPolling();
         if (jobNeedsReview(job)) {
           showToast(
-            `⚠️ Document processed with ${job.flagged_questions_count || 0} question(s) needing review.`,
+            `Warning: Document processed with ${job.flagged_questions_count || 0} question(s) needing review.`,
             'info',
           );
         } else {
-          showToast('✅ Document processed successfully!', 'success');
+          showToast('Document processed successfully!', 'success');
         }
         refreshJobs();
       } else if (job.status === 'error') {
         stopPolling();
-        showToast(`❌ Error: ${job.error_message || 'Unknown error'}`, 'error');
+        showToast(`Error: ${job.error_message || 'Unknown error'}`, 'error');
         refreshJobs();
       }
     } catch (err) {
@@ -136,8 +161,8 @@ export default function UploadPage() {
           errorCount > 0
             ? `Batch complete: ${doneCount} done, ${errorCount} errors`
             : reviewCount > 0
-              ? `⚠️ Batch complete: ${reviewCount} file(s) need review before use`
-              : `✅ Batch complete: ${doneCount} documents processed`,
+              ? `Warning: Batch complete: ${reviewCount} file(s) need review before use`
+              : `Batch complete: ${doneCount} documents processed`,
           errorCount > 0 || reviewCount > 0 ? 'info' : 'success',
         );
         refreshJobs();
@@ -171,7 +196,7 @@ export default function UploadPage() {
 
     if (invalidFiles.length > 0) {
       showToast(
-        `❌ Skipped unsupported files: ${invalidFiles.slice(0, 3).join(', ')}${invalidFiles.length > 3 ? '…' : ''}`,
+        `Skipped unsupported files: ${invalidFiles.slice(0, 3).join(', ')}${invalidFiles.length > 3 ? '...' : ''}`,
         'error',
       );
     }
@@ -182,7 +207,7 @@ export default function UploadPage() {
     if (validFiles.length > maxBulkFiles) {
       nextFiles = validFiles.slice(0, maxBulkFiles);
       showToast(
-        `⚠️ Batch upload is limited to ${maxBulkFiles} files. Kept the first ${maxBulkFiles} files.`,
+        `Batch upload is limited to ${maxBulkFiles} files. Kept the first ${maxBulkFiles} files.`,
         'info',
       );
     }
@@ -199,22 +224,36 @@ export default function UploadPage() {
 
     try {
       if (selectedFiles.length === 1) {
-        const job = await uploadDocument(selectedFiles[0], selectedParserProfile);
+        const job = await uploadDocument(
+          selectedFiles[0],
+          selectedParserProfile,
+          {
+            agentMode: selectedAgentMode,
+            agentInstructions,
+          },
+        );
         setCurrentBatch(null);
         setCurrentJob(job);
         setSelectedFiles([]);
-        showToast('📤 Document uploaded. Processing...', 'info');
+        showToast('Document uploaded. Processing...', 'info');
         pollRef.current = setInterval(() => pollJob(job.id), 1500);
       } else {
-        const batch = await uploadDocuments(selectedFiles, selectedParserProfile);
+        const batch = await uploadDocuments(
+          selectedFiles,
+          selectedParserProfile,
+          {
+            agentMode: selectedAgentMode,
+            agentInstructions,
+          },
+        );
         setCurrentJob(null);
         setCurrentBatch(batch);
         setSelectedFiles([]);
-        showToast(`📤 ${batch.total} documents uploaded. Processing batch...`, 'info');
+        showToast(`${batch.total} documents uploaded. Processing batch...`, 'info');
         pollRef.current = setInterval(() => pollBatch(batch.batch_id), 1500);
       }
     } catch (err) {
-      showToast(`❌ ${err.message}`, 'error');
+      showToast(`${err.message}`, 'error');
     } finally {
       setUploading(false);
     }
@@ -285,6 +324,66 @@ export default function UploadPage() {
     };
   }, [currentBatch]);
 
+  const agentModeBlocked = selectedAgentMode !== 'off' && !agentAvailable;
+
+  const thinkingLogText = useMemo(() => {
+    if (currentJob) {
+      const lines = [];
+      if (currentJob.agent_mode && currentJob.agent_mode !== 'off') {
+        lines.push(`Mode: ${currentJob.agent_mode}`);
+      }
+      if (currentJob.agent_model) {
+        lines.push(`Model: ${currentJob.agent_model}`);
+      }
+      if (currentJob.agent_status) {
+        lines.push(`Status: ${currentJob.agent_status}`);
+      }
+      lines.push('');
+
+      const trace = Array.isArray(currentJob.agent_trace) ? currentJob.agent_trace : [];
+      if (trace.length > 0) {
+        for (const event of trace.slice(-120)) {
+          lines.push(formatThinkingLine(event));
+        }
+      } else {
+        lines.push('Waiting for AI activity...');
+      }
+      return lines.join('\n');
+    }
+
+    if (batchSummary && Array.isArray(batchSummary.items)) {
+      const batchLines = [];
+      const flattened = [];
+      for (const job of batchSummary.items) {
+        const trace = Array.isArray(job.agent_trace) ? job.agent_trace : [];
+        for (const event of trace) {
+          flattened.push({
+            timestamp: event?.timestamp || '',
+            line: formatThinkingLine(event, `${job.original_filename} · `),
+          });
+        }
+      }
+
+      if (flattened.length === 0) {
+        return 'Waiting for AI activity across the current batch...';
+      }
+
+      flattened
+        .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+        .slice(-160)
+        .forEach((entry) => batchLines.push(entry.line));
+      return batchLines.join('\n');
+    }
+
+    return 'No AI thinking logs yet. Upload a file and pick an AI answering mode.';
+  }, [currentJob, batchSummary]);
+
+  useEffect(() => {
+    if (thinkingRef.current) {
+      thinkingRef.current.scrollTop = thinkingRef.current.scrollHeight;
+    }
+  }, [thinkingLogText]);
+
   return (
     <div className="page-container">
       {toast && (
@@ -296,32 +395,78 @@ export default function UploadPage() {
       <div className="page-header">
         <h1>TrustReply</h1>
         <p>
-          Upload one or many .docx or .pdf questionnaires and TrustReply will auto-fill answers from your knowledge base.
+          Upload one or many .docx, .pdf, or .csv questionnaires and TrustReply will auto-fill answers from your knowledge base.
         </p>
       </div>
 
       <div className="card" style={{ marginBottom: '1.25rem', padding: '1rem 1.25rem' }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'end' }}>
-          <div style={{ flex: '1 1 280px' }}>
-            <label className="form-label">Parser Profile</label>
+          <div style={{ flex: '1 1 260px' }}>
+            <label className="form-label">Answering Mode</label>
             <select
               className="form-select"
-              value={selectedParserProfile}
-              onChange={(e) => setSelectedParserProfile(e.target.value)}
+              value={selectedAgentMode}
+              onChange={(e) => setSelectedAgentMode(e.target.value)}
             >
-              {parserProfiles.map((profile) => (
-                <option key={profile.name} value={profile.name}>
-                  {profile.label}
+              {AGENT_MODES.map((mode) => (
+                <option key={mode.name} value={mode.name}>
+                  {mode.label}
                 </option>
               ))}
             </select>
           </div>
-          {parserProfiles.length > 0 && (
-            <div style={{ flex: '2 1 360px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-              {parserProfiles.find((profile) => profile.name === selectedParserProfile)?.description}
+          <div style={{ flex: '2 1 360px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+            <div>
+              {AGENT_MODES.find((mode) => mode.name === selectedAgentMode)?.description}
             </div>
-          )}
+            {selectedAgentMode !== 'off' && (
+              <div style={{ marginTop: '0.35rem' }}>
+                TrustReply still uses the default parser internally to anchor exact question/answer placement.
+              </div>
+            )}
+          </div>
         </div>
+
+        {selectedAgentMode !== 'off' && (
+          <>
+            {agentModeBlocked && (
+              <div
+                style={{
+                  marginTop: '0.8rem',
+                  padding: '0.7rem 0.9rem',
+                  borderRadius: 'var(--radius-md)',
+                  background: 'var(--warning-bg)',
+                  color: 'var(--warning)',
+                  fontSize: '0.88rem',
+                }}
+              >
+                Agent is not configured. Go to{' '}
+                <Link
+                  href="/settings"
+                  style={{
+                    color: 'var(--warning)',
+                    textDecoration: 'underline',
+                    textUnderlineOffset: '0.15rem',
+                  }}
+                >
+                  Settings
+                </Link>{' '}
+                to set up your AI provider credentials.
+              </div>
+            )}
+
+            <div style={{ marginTop: '0.9rem' }}>
+              <label className="form-label">Agent Instructions (Optional)</label>
+              <textarea
+                className="form-textarea"
+                rows={3}
+                placeholder="Example: prioritize context from this document over generic answers, and flag unknown legal/entity-specific fields."
+                value={agentInstructions}
+                onChange={(e) => setAgentInstructions(e.target.value)}
+              />
+            </div>
+          </>
+        )}
       </div>
 
       <div
@@ -332,7 +477,7 @@ export default function UploadPage() {
       >
         <input
           type="file"
-          accept=".docx,.pdf"
+          accept=".docx,.pdf,.csv"
           multiple
           onChange={handleFileChange}
           id="file-upload"
@@ -347,7 +492,7 @@ export default function UploadPage() {
         </div>
         <div className="upload-zone-subtitle">
           {selectedFiles.length === 0
-            ? `Supports .docx and .pdf files. You can drop multiple files at once, up to ${maxBulkFiles} per batch.`
+            ? `Supports .docx, .pdf, and .csv files. You can drop multiple files at once, up to ${maxBulkFiles} per batch.`
             : `${(selectedFiles.reduce((total, file) => total + file.size, 0) / 1024).toFixed(1)} KB total`
           }
         </div>
@@ -376,9 +521,14 @@ export default function UploadPage() {
 
       {selectedFiles.length > 0 && !uploading && (
         <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
-          <button className="btn btn-primary btn-lg" onClick={handleUpload}>
-            🚀 Process {selectedFiles.length === 1 ? 'Document' : `${selectedFiles.length} Documents`}
+          <button className="btn btn-primary btn-lg" onClick={handleUpload} disabled={agentModeBlocked}>
+            Process {selectedFiles.length === 1 ? 'Document' : `${selectedFiles.length} Documents`}
           </button>
+          {agentModeBlocked && (
+            <div style={{ marginTop: '0.55rem', color: 'var(--warning)', fontSize: '0.84rem' }}>
+              Configure AI provider in <Link href="/settings" style={{ color: 'var(--warning)', textDecoration: 'underline' }}>Settings</Link> or switch back to Semantic Only.
+            </div>
+          )}
         </div>
       )}
 
@@ -401,6 +551,35 @@ export default function UploadPage() {
             <div className="progress-bar-wrapper" style={{ marginBottom: '1rem' }}>
               <div className="progress-bar-fill" style={{ width: `${singleJobProgress}%` }} />
             </div>
+
+            {currentJob.agent_mode && currentJob.agent_mode !== 'off' && (
+              <div style={{ marginBottom: '0.85rem', color: 'var(--text-secondary)', fontSize: '0.88rem' }}>
+                Agent mode: <strong>{currentJob.agent_mode}</strong>
+                {' · '}
+                Status: <strong>{currentJob.agent_status || 'pending'}</strong>
+                {currentJob.agent_model && (
+                  <>
+                    {' · '}
+                    Model: <strong>{currentJob.agent_model}</strong>
+                  </>
+                )}
+              </div>
+            )}
+
+            {currentJob.agent_summary && currentJob.agent_mode && currentJob.agent_mode !== 'off' && (
+              <div
+                style={{
+                  marginBottom: '0.9rem',
+                  padding: '0.75rem 0.9rem',
+                  borderRadius: 'var(--radius-md)',
+                  background: currentJob.agent_status === 'error' ? 'var(--error-bg)' : 'var(--bg-input)',
+                  color: currentJob.agent_status === 'error' ? 'var(--error)' : 'var(--text-secondary)',
+                  fontSize: '0.88rem',
+                }}
+              >
+                {currentJob.agent_summary}
+              </div>
+            )}
 
             {currentJob.status === 'done' && (
               <>
@@ -463,7 +642,7 @@ export default function UploadPage() {
                     className="btn btn-success btn-lg"
                     download
                   >
-                    ⬇️ Download Filled Document
+                    Download Filled File
                   </a>
                 </div>
               </>
@@ -615,7 +794,7 @@ export default function UploadPage() {
                   className="btn btn-success btn-lg"
                   download
                 >
-                  ⬇️ Download All Results (.zip)
+                  Download All Results (.zip)
                 </a>
               </div>
             )}
@@ -676,6 +855,12 @@ export default function UploadPage() {
                         <span>
                           {job.parser_profile_name}
                           {typeof job.parse_confidence === 'number' && ` (${Math.round(job.parse_confidence * 100)}%)`}
+                        </span>
+                      )}
+                      {job.agent_mode && job.agent_mode !== 'off' && (
+                        <span>
+                          Agent {job.agent_mode}
+                          {job.agent_status ? ` (${job.agent_status})` : ''}
                         </span>
                       )}
                       {job.total_questions === 0 && (
@@ -756,9 +941,15 @@ export default function UploadPage() {
                         {typeof job.parse_confidence === 'number' && ` (${Math.round(job.parse_confidence * 100)}%)`}
                       </span>
                     )}
+                    {job.agent_mode && job.agent_mode !== 'off' && (
+                      <span>
+                        Agent {job.agent_mode}
+                        {job.agent_status ? ` (${job.agent_status})` : ''}
+                      </span>
+                    )}
                     {job.flagged_questions_count > 0 && (
                       <span style={{ color: 'var(--warning)' }}>
-                        ⚠️ {job.flagged_questions_count} flagged
+                        {job.flagged_questions_count} flagged
                       </span>
                     )}
                     {job.fallback_recommended && (
@@ -799,6 +990,26 @@ export default function UploadPage() {
           </div>
         </div>
       )}
+
+      <div className="card" style={{ marginTop: '2rem' }}>
+        <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>AI Model Thinking</div>
+        <div style={{ color: 'var(--text-muted)', fontSize: '0.84rem', marginBottom: '0.6rem' }}>
+          Live trace while uploads are processing.
+        </div>
+        <textarea
+          ref={thinkingRef}
+          className="form-textarea"
+          readOnly
+          value={thinkingLogText}
+          rows={12}
+          style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: '0.78rem',
+            lineHeight: 1.45,
+            whiteSpace: 'pre',
+          }}
+        />
+      </div>
     </div>
   );
 }
