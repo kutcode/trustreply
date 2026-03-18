@@ -21,6 +21,9 @@ export default function RootLayout({ children }) {
       <body>
         <Navbar />
         <main>{children}</main>
+        <footer className="app-footer">
+          Built with TrustReply &mdash; Questionnaire Response Automation
+        </footer>
       </body>
     </html>
   );

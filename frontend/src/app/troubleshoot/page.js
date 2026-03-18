@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { getSettings, troubleshootDocument } from '@/lib/api';
+import { getSettings, saveSettings, troubleshootDocument } from '@/lib/api';
 
 const FALLBACK_REASON_LABELS = {
     no_questions_found: 'No questions found',
@@ -36,6 +36,8 @@ export default function TroubleshootPage() {
     const [agentAvailable, setAgentAvailable] = useState(false);
     const [analyzeWithAgent, setAnalyzeWithAgent] = useState(false);
     const [agentInstructions, setAgentInstructions] = useState('');
+    const [defaultParserProfile, setDefaultParserProfile] = useState('default');
+    const [applyingFix, setApplyingFix] = useState(false);
     const [thinkingLines, setThinkingLines] = useState([]);
     const [toast, setToast] = useState(null);
     const thinkingTickerRef = useRef(null);
@@ -47,6 +49,7 @@ export default function TroubleshootPage() {
 
     const profilesWithQuestions = result?.profiles.filter((profile) => profile.question_count > 0).length || 0;
     const bestQuestionCount = recommendedProfile?.question_count || 0;
+    const aiFixPlan = result?.agent_analysis?.fix_plan || null;
 
     const showToast = (message, type = 'info') => {
         setToast({ message, type });
@@ -56,7 +59,10 @@ export default function TroubleshootPage() {
     useEffect(() => {
         getSettings()
             .then((data) => {
-                setAgentAvailable(Boolean(data.agent_available));
+                const available = Boolean(data.agent_available);
+                setAgentAvailable(available);
+                setAnalyzeWithAgent(available);
+                setDefaultParserProfile(data.default_parser_profile || 'default');
             })
             .catch(() => { });
     }, []);
@@ -181,6 +187,22 @@ export default function TroubleshootPage() {
         }
     };
 
+    const handleApplyFix = async () => {
+        const parserProfile = aiFixPlan?.parser_profile;
+        if (!parserProfile) return;
+
+        setApplyingFix(true);
+        try {
+            await saveSettings({ default_parser_profile: parserProfile });
+            setDefaultParserProfile(parserProfile);
+            showToast(`Applied '${parserProfile}' as the default parser profile.`, 'success');
+        } catch (err) {
+            showToast(err.message || 'Failed to apply parser fix.', 'error');
+        } finally {
+            setApplyingFix(false);
+        }
+    };
+
     return (
         <div className="page-container">
             {toast && (
@@ -194,7 +216,7 @@ export default function TroubleshootPage() {
                 <p>
                     Drop in a problematic questionnaire and we&apos;ll run it through each parser profile, show what
                     was extracted, and recommend the best retry path. Base diagnostics are deterministic and use the
-                    same parser stack as normal uploads, and you can optionally run AI troubleshooting for deeper analysis.
+                    same parser stack as normal uploads, and AI diagnostics can propose a system-level fix.
                 </p>
             </div>
 
@@ -231,13 +253,14 @@ export default function TroubleshootPage() {
 
             <div className="card" style={{ marginTop: '1rem' }}>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.8rem', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                    <label className="toggle-switch">
                         <input
                             type="checkbox"
                             checked={analyzeWithAgent}
                             onChange={(e) => setAnalyzeWithAgent(e.target.checked)}
                         />
-                        Run agent diagnostics
+                        <span className="toggle-track" />
+                        <span className="toggle-label">Run agent diagnostics</span>
                     </label>
                     {!agentAvailable && analyzeWithAgent && (
                         <span style={{ color: 'var(--warning)', fontSize: '0.82rem' }}>
@@ -381,6 +404,49 @@ export default function TroubleshootPage() {
                                     </div>
                                 </div>
                             )}
+                            {aiFixPlan && (
+                                <div
+                                    style={{
+                                        marginTop: '0.9rem',
+                                        padding: '0.85rem 0.9rem',
+                                        borderRadius: 'var(--radius-md)',
+                                        background: 'var(--bg-input)',
+                                    }}
+                                >
+                                    <div style={{ fontWeight: 700, marginBottom: '0.35rem' }}>AI Recommended Fix</div>
+                                    <div style={{ color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                                        {aiFixPlan.title || 'Model generated a troubleshooting fix plan.'}
+                                    </div>
+                                    {aiFixPlan.rationale && (
+                                        <div style={{ color: 'var(--text-muted)', marginBottom: '0.55rem', fontSize: '0.88rem' }}>
+                                            {aiFixPlan.rationale}
+                                        </div>
+                                    )}
+                                    {Array.isArray(aiFixPlan.steps) && aiFixPlan.steps.length > 0 && (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginBottom: '0.65rem', color: 'var(--text-secondary)' }}>
+                                            {aiFixPlan.steps.map((step, idx) => (
+                                                <div key={`fix-step-${idx}`}>• {step}</div>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {aiFixPlan.can_auto_apply && aiFixPlan.action === 'set_default_parser_profile' && aiFixPlan.parser_profile && (
+                                        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.65rem' }}>
+                                            <button
+                                                className="btn btn-primary btn-sm"
+                                                onClick={handleApplyFix}
+                                                disabled={applyingFix}
+                                            >
+                                                {applyingFix ? 'Applying...' : 'Apply fix in system'}
+                                            </button>
+                                            <span style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                                                {defaultParserProfile === aiFixPlan.parser_profile
+                                                    ? `Default parser is already '${aiFixPlan.parser_profile}'.`
+                                                    : `Will set default parser to '${aiFixPlan.parser_profile}'.`}
+                                            </span>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -494,8 +560,11 @@ export default function TroubleshootPage() {
                 </>
             )}
 
-            <div className="card" style={{ marginTop: '2rem' }}>
-                <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>AI Model Thinking</div>
+            <div className="card card-accent-left" style={{ marginTop: '2rem' }}>
+                <div className="section-header" style={{ marginBottom: '0.75rem', paddingBottom: '0.6rem' }}>
+                    <div className="section-header-icon">💭</div>
+                    <h2>AI Model Thinking</h2>
+                </div>
                 <div style={{ color: 'var(--text-muted)', fontSize: '0.84rem', marginBottom: '0.6rem' }}>
                     Live analysis log while troubleshooting runs.
                 </div>

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { getSettings, saveSettings } from '@/lib/api';
+import { getSettings, listAgentModels, saveSettings } from '@/lib/api';
 
 const AGENT_PROVIDER_PRESETS = {
   openai: {
@@ -11,26 +11,72 @@ const AGENT_PROVIDER_PRESETS = {
     model: 'gpt-4.1-nano',
     keyHint: 'Use your OpenAI API key',
   },
-  ollama: {
-    label: 'Ollama (Local)',
-    provider: 'ollama',
-    apiBase: 'http://127.0.0.1:11434/v1',
-    model: 'qwen2.5:7b',
-    keyHint: 'Use local or any placeholder value',
-  },
-  custom: {
-    label: 'Custom OpenAI-Compatible',
-    provider: 'custom',
-    apiBase: '',
-    model: '',
-    keyHint: 'Provider key',
+  claude: {
+    label: 'Claude API (Anthropic)',
+    provider: 'anthropic',
+    apiBase: 'https://api.anthropic.com/v1',
+    model: 'claude-3-5-haiku-latest',
+    keyHint: 'Use your Anthropic API key',
   },
 };
 
+const STATIC_PROVIDER_MODELS = {
+  openai: [
+    { id: 'gpt-4.1-nano', label: 'gpt-4.1-nano' },
+    { id: 'gpt-4.1-mini', label: 'gpt-4.1-mini' },
+    { id: 'gpt-4.1', label: 'gpt-4.1' },
+    { id: 'gpt-5-mini', label: 'gpt-5-mini' },
+  ],
+  claude: [
+    { id: 'claude-3-5-haiku-latest', label: 'claude-3-5-haiku-latest' },
+    { id: 'claude-3-5-sonnet-latest', label: 'claude-3-5-sonnet-latest' },
+    { id: 'claude-3-opus-latest', label: 'claude-3-opus-latest' },
+  ],
+};
+
 function detectPreset(provider, apiBase) {
-  if (provider === 'ollama' || (apiBase && apiBase.includes('11434'))) return 'ollama';
-  if (provider === 'openai' || (apiBase && apiBase.includes('openai.com'))) return 'openai';
-  return 'custom';
+  if (provider === 'anthropic' || provider === 'claude' || (apiBase && apiBase.includes('anthropic.com'))) {
+    return 'claude';
+  }
+  return 'openai';
+}
+
+function SkeletonSettings() {
+  return (
+    <div className="page-container">
+      <div className="page-header">
+        <h1>Settings</h1>
+        <p>Loading configuration...</p>
+      </div>
+      <div className="card" style={{ marginBottom: '1.25rem', padding: '1.25rem' }}>
+        <div className="skeleton skeleton-text" style={{ width: '35%', marginBottom: '1rem' }} />
+        <div style={{ display: 'grid', gap: '1rem', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
+          <div>
+            <div className="skeleton skeleton-text-short" />
+            <div className="skeleton" style={{ height: 38 }} />
+          </div>
+          <div>
+            <div className="skeleton skeleton-text-short" />
+            <div className="skeleton" style={{ height: 38 }} />
+          </div>
+        </div>
+      </div>
+      <div className="card" style={{ padding: '1.25rem' }}>
+        <div className="skeleton skeleton-text" style={{ width: '40%', marginBottom: '1rem' }} />
+        <div className="skeleton" style={{ height: 24, width: 120, marginBottom: '1rem' }} />
+        <div style={{ display: 'grid', gap: '1rem', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
+          <div>
+            <div className="skeleton skeleton-text-short" />
+            <div className="skeleton" style={{ height: 38 }} />
+          </div>
+          <div>
+            <div className="skeleton skeleton-text-short" />
+            <div className="skeleton" style={{ height: 38 }} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function SettingsPage() {
@@ -45,7 +91,6 @@ export default function SettingsPage() {
 
   // Agent settings
   const [agentEnabled, setAgentEnabled] = useState(false);
-  const [agentDefaultMode, setAgentDefaultMode] = useState('off');
   const [selectedPreset, setSelectedPreset] = useState('openai');
   const [agentProvider, setAgentProvider] = useState('openai');
   const [agentApiBase, setAgentApiBase] = useState('https://api.openai.com/v1');
@@ -54,11 +99,53 @@ export default function SettingsPage() {
   const [agentHasKey, setAgentHasKey] = useState(false);
   const [agentTimeoutSeconds, setAgentTimeoutSeconds] = useState(45);
   const [agentMaxQuestionsPerCall, setAgentMaxQuestionsPerCall] = useState(20);
+  const [modelOptions, setModelOptions] = useState([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [modelLoadError, setModelLoadError] = useState('');
 
   const showToast = useCallback((message, type = 'info') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 4000);
   }, []);
+
+  const getStaticModels = useCallback((providerName) => {
+    const presetKey = detectPreset(providerName, '');
+    return STATIC_PROVIDER_MODELS[presetKey] || [];
+  }, []);
+
+  const fetchModels = useCallback(async ({
+    provider,
+    apiBase,
+    apiKey = '',
+    currentModel = '',
+  }) => {
+    if (!provider || !apiBase) {
+      setModelOptions(getStaticModels(provider));
+      setModelLoadError('Provider and API base are required to load models.');
+      return;
+    }
+
+    setLoadingModels(true);
+    setModelLoadError('');
+    try {
+      const data = await listAgentModels({
+        provider,
+        apiBase,
+        apiKey,
+      });
+      const options = Array.isArray(data.models) ? data.models : [];
+      setModelOptions(options);
+      if (options.length > 0 && !options.some((option) => option.id === currentModel)) {
+        setAgentModel(options[0].id);
+      }
+    } catch (err) {
+      const fallback = getStaticModels(provider);
+      setModelOptions(fallback);
+      setModelLoadError(err.message || 'Failed to load models');
+    } finally {
+      setLoadingModels(false);
+    }
+  }, [getStaticModels]);
 
   useEffect(() => {
     getSettings()
@@ -67,28 +154,58 @@ export default function SettingsPage() {
         setDefaultParserProfile(data.default_parser_profile || 'default');
         setParserProfiles(data.parser_profiles || []);
         setAgentEnabled(Boolean(data.agent_enabled));
-        setAgentDefaultMode(data.agent_default_mode || 'off');
-        setAgentProvider(data.agent_provider || 'openai');
-        setAgentApiBase(data.agent_api_base || 'https://api.openai.com/v1');
-        setAgentModel(data.agent_model || 'gpt-4.1-nano');
+        const provider = data.agent_provider || 'openai';
+        const apiBase = data.agent_api_base || 'https://api.openai.com/v1';
+        const model = data.agent_model || 'gpt-4.1-nano';
+
+        setAgentProvider(provider);
+        setAgentApiBase(apiBase);
+        setAgentModel(model);
         setAgentHasKey(Boolean(data.agent_has_key));
         setAgentTimeoutSeconds(data.agent_timeout_seconds ?? 45);
         setAgentMaxQuestionsPerCall(data.agent_max_questions_per_call ?? 20);
-        setSelectedPreset(detectPreset(data.agent_provider, data.agent_api_base));
+        setSelectedPreset(detectPreset(provider, apiBase));
+
+        if (data.agent_has_key) {
+          fetchModels({ provider, apiBase, currentModel: model });
+        } else {
+          setModelOptions(getStaticModels(provider));
+          setModelLoadError('Enter an API key and click Refresh models to load provider model options.');
+        }
       })
       .catch(() => showToast('Failed to load settings', 'error'))
       .finally(() => setLoading(false));
-  }, [showToast]);
+  }, [fetchModels, getStaticModels, showToast]);
 
   const handlePresetChange = (presetName) => {
-    const preset = AGENT_PROVIDER_PRESETS[presetName] || AGENT_PROVIDER_PRESETS.custom;
+    const preset = AGENT_PROVIDER_PRESETS[presetName] || AGENT_PROVIDER_PRESETS.openai;
     setSelectedPreset(presetName);
     setAgentProvider(preset.provider);
     setAgentApiBase(preset.apiBase);
     setAgentModel(preset.model);
-    if (presetName === 'ollama') {
-      setAgentApiKey('local');
+    setAgentApiKey('');
+    setModelOptions([]);
+    setModelLoadError('');
+
+    if (agentHasKey) {
+      fetchModels({
+        provider: preset.provider,
+        apiBase: preset.apiBase,
+        currentModel: preset.model,
+      });
+    } else {
+      setModelOptions(getStaticModels(preset.provider));
+      setModelLoadError('Enter an API key and click Refresh models to load provider model options.');
     }
+  };
+
+  const handleRefreshModels = () => {
+    fetchModels({
+      provider: agentProvider,
+      apiBase: agentApiBase,
+      apiKey: agentApiKey,
+      currentModel: agentModel,
+    });
   };
 
   const handleSave = async () => {
@@ -98,7 +215,7 @@ export default function SettingsPage() {
         similarity_threshold: similarityThreshold,
         default_parser_profile: defaultParserProfile,
         agent_enabled: agentEnabled,
-        agent_default_mode: agentDefaultMode,
+        agent_default_mode: 'agent',
         agent_provider: agentProvider,
         agent_api_base: agentApiBase,
         agent_model: agentModel,
@@ -112,6 +229,11 @@ export default function SettingsPage() {
       const updated = await saveSettings(payload);
       setAgentHasKey(Boolean(updated.agent_has_key));
       setAgentApiKey('');
+      fetchModels({
+        provider: agentProvider,
+        apiBase: agentApiBase,
+        currentModel: agentModel,
+      });
       showToast('Settings saved successfully!', 'success');
     } catch (err) {
       showToast(`Failed to save: ${err.message}`, 'error');
@@ -121,15 +243,11 @@ export default function SettingsPage() {
   };
 
   if (loading) {
-    return (
-      <div className="page-container">
-        <div className="page-header">
-          <h1>Settings</h1>
-          <p>Loading...</p>
-        </div>
-      </div>
-    );
+    return <SkeletonSettings />;
   }
+
+  const modelInOptions = modelOptions.some((option) => option.id === agentModel);
+  const selectedModelValue = modelInOptions ? agentModel : '__custom__';
 
   return (
     <div className="page-container">
@@ -149,9 +267,10 @@ export default function SettingsPage() {
 
       {/* ── Matching Settings ─────────────────────────── */}
       <div className="card" style={{ marginBottom: '1.25rem', padding: '1.25rem' }}>
-        <h2 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '1rem' }}>
-          Matching Settings
-        </h2>
+        <div className="section-header">
+          <div className="section-header-icon">🎯</div>
+          <h2>Matching Settings</h2>
+        </div>
         <div style={{ display: 'grid', gap: '1rem', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
           <div>
             <label className="form-label">Similarity Threshold</label>
@@ -190,39 +309,39 @@ export default function SettingsPage() {
 
       {/* ── AI Agent Settings ─────────────────────────── */}
       <div className="card" style={{ marginBottom: '1.25rem', padding: '1.25rem' }}>
-        <h2 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '1rem' }}>
-          AI Agent Settings
-        </h2>
+        <div className="section-header">
+          <div className="section-header-icon">🧠</div>
+          <h2>AI Agent Settings</h2>
+        </div>
 
         <div style={{ display: 'grid', gap: '1rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.95rem' }}>
+            <label className="toggle-switch">
               <input
                 type="checkbox"
                 checked={agentEnabled}
                 onChange={(e) => setAgentEnabled(e.target.checked)}
               />
-              Enable AI Agent
+              <span className="toggle-track" />
+              <span className="toggle-label">Enable AI Agent</span>
             </label>
             <span style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>
               When enabled, agent modes become available on the Upload page.
             </span>
           </div>
 
+          <div className="divider" />
+
           <div style={{ display: 'grid', gap: '1rem', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
             <div>
               <label className="form-label">Default Agent Mode</label>
-              <select
-                className="form-select"
-                value={agentDefaultMode}
-                onChange={(e) => setAgentDefaultMode(e.target.value)}
-              >
-                <option value="off">Semantic Only</option>
-                <option value="agent">Agent</option>
-              </select>
+              <input className="form-input" value="Agent" readOnly style={{ opacity: 0.7, cursor: 'default' }} />
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.82rem', marginTop: '0.3rem' }}>
+                Default mode is fixed to Agent for all new uploads.
+              </div>
             </div>
             <div>
-              <label className="form-label">Provider Preset</label>
+              <label className="form-label">Provider</label>
               <select
                 className="form-select"
                 value={selectedPreset}
@@ -242,18 +361,69 @@ export default function SettingsPage() {
                 className="form-input"
                 value={agentApiBase}
                 onChange={(e) => setAgentApiBase(e.target.value)}
-                placeholder="https://api.openai.com/v1"
+                placeholder={AGENT_PROVIDER_PRESETS[selectedPreset]?.apiBase || 'https://api.openai.com/v1'}
               />
             </div>
             <div>
               <label className="form-label">Model</label>
-              <input
-                className="form-input"
-                value={agentModel}
-                onChange={(e) => setAgentModel(e.target.value)}
-                placeholder="gpt-4.1-nano"
-              />
+              <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
+                <select
+                  className="form-select"
+                  value={selectedModelValue}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    if (value === '__custom__') {
+                      if (modelInOptions) {
+                        setAgentModel('');
+                      }
+                      return;
+                    }
+                    setAgentModel(value);
+                  }}
+                >
+                  {modelOptions.map((option) => (
+                    <option key={option.id} value={option.id}>{option.label || option.id}</option>
+                  ))}
+                  <option value="__custom__">Custom model (manual entry)</option>
+                </select>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={handleRefreshModels}
+                  disabled={loadingModels}
+                >
+                  {loadingModels ? '...' : '↻'}
+                </button>
+              </div>
+              {selectedModelValue === '__custom__' && (
+                <input
+                  className="form-input"
+                  value={agentModel}
+                  onChange={(e) => setAgentModel(e.target.value)}
+                  placeholder={AGENT_PROVIDER_PRESETS[selectedPreset]?.model || 'gpt-4.1-nano'}
+                  style={{ marginTop: '0.6rem' }}
+                />
+              )}
+              {modelLoadError && (
+                <div style={{ color: 'var(--warning)', fontSize: '0.82rem', marginTop: '0.45rem' }}>
+                  {modelLoadError}
+                </div>
+              )}
             </div>
+          </div>
+
+          <div
+            style={{
+              padding: '0.85rem',
+              borderRadius: 'var(--radius-md)',
+              background: 'var(--bg-input)',
+              color: 'var(--text-secondary)',
+              fontSize: '0.86rem',
+              borderLeft: '3px solid var(--accent-primary)',
+            }}
+          >
+            <strong>OpenAI:</strong> use <code style={{ color: 'var(--text-accent)' }}>https://api.openai.com/v1</code> with models like <code style={{ color: 'var(--text-accent)' }}>gpt-4.1-nano</code>.<br />
+            <strong>Claude:</strong> use <code style={{ color: 'var(--text-accent)' }}>https://api.anthropic.com/v1</code> with models like <code style={{ color: 'var(--text-accent)' }}>claude-3-5-haiku-latest</code>.
           </div>
 
           <div style={{ display: 'grid', gap: '1rem', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
@@ -261,8 +431,8 @@ export default function SettingsPage() {
               <label className="form-label">
                 API Key
                 {agentHasKey && !agentApiKey && (
-                  <span style={{ color: 'var(--success)', fontWeight: 400, marginLeft: '0.5rem', fontSize: '0.82rem' }}>
-                    (saved)
+                  <span className="chip" style={{ marginLeft: '0.5rem', fontSize: '0.7rem' }}>
+                    ✓ saved
                   </span>
                 )}
               </label>
@@ -275,6 +445,8 @@ export default function SettingsPage() {
               />
             </div>
           </div>
+
+          <div className="divider" />
 
           <div style={{ display: 'grid', gap: '1rem', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
             <div>

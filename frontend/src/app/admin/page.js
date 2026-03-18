@@ -12,6 +12,7 @@ import {
 } from '@/lib/api';
 
 export default function AdminPage() {
+    const IMPORT_EXTENSIONS = new Set(['csv', 'json']);
     const [qaPairs, setQaPairs] = useState([]);
     const [total, setTotal] = useState(0);
     const [page, setPage] = useState(1);
@@ -30,6 +31,8 @@ export default function AdminPage() {
 
     // Import state
     const [showImport, setShowImport] = useState(false);
+    const [importDragover, setImportDragover] = useState(false);
+    const [importing, setImporting] = useState(false);
 
     const showToast = (message, type = 'info') => {
         setToast({ message, type });
@@ -134,10 +137,16 @@ export default function AdminPage() {
         setShowModal(true);
     };
 
-    // Import
-    const handleImport = async (e) => {
-        const file = e.target.files?.[0];
+    const handleImportFile = async (file) => {
         if (!file) return;
+
+        const ext = file.name.split('.').pop()?.toLowerCase();
+        if (!ext || !IMPORT_EXTENSIONS.has(ext)) {
+            showToast('❌ Only CSV and JSON files can be imported', 'error');
+            return;
+        }
+
+        setImporting(true);
         try {
             const result = await importQAPairs(file);
             showToast(`✅ Imported ${result.imported} Q&A pairs`, 'success');
@@ -149,7 +158,31 @@ export default function AdminPage() {
             setShowImport(false);
         } catch (err) {
             showToast(`❌ ${err.message}`, 'error');
+        } finally {
+            setImporting(false);
+            setImportDragover(false);
         }
+    };
+
+    // Import
+    const handleImport = async (e) => {
+        const file = e.target.files?.[0];
+        await handleImportFile(file);
+        e.target.value = '';
+    };
+
+    const handleImportDragOver = (e) => {
+        e.preventDefault();
+        setImportDragover(true);
+    };
+
+    const handleImportDragLeave = () => setImportDragover(false);
+
+    const handleImportDrop = async (e) => {
+        e.preventDefault();
+        setImportDragover(false);
+        const file = e.dataTransfer.files?.[0];
+        await handleImportFile(file);
     };
 
     const totalPages = Math.ceil(total / pageSize);
@@ -166,7 +199,7 @@ export default function AdminPage() {
             {/* Header */}
             <div className="page-header">
                 <h1>Knowledge Base</h1>
-                <p>Manage your question-answer pairs. These are used to auto-fill uploaded questionnaires.</p>
+                <p>Manage your question-answer pairs used to auto-fill uploaded questionnaires.</p>
             </div>
 
             {/* Stats */}
@@ -405,12 +438,27 @@ export default function AdminPage() {
                             <strong>JSON format:</strong><br />
                             {`[{"category":"Security","question":"...","answer":"..."}]`}
                         </div>
-                        <input
-                            type="file"
-                            accept=".csv,.json"
-                            onChange={handleImport}
-                            style={{ color: 'var(--text-primary)' }}
-                        />
+                        <div
+                            className={`upload-zone ${importDragover ? 'dragover' : ''}`}
+                            onDragOver={handleImportDragOver}
+                            onDragLeave={handleImportDragLeave}
+                            onDrop={handleImportDrop}
+                            style={{ padding: '2rem 1.25rem' }}
+                        >
+                            <input
+                                type="file"
+                                accept=".csv,.json"
+                                onChange={handleImport}
+                                disabled={importing}
+                            />
+                            <span className="upload-zone-icon" style={{ fontSize: '2.25rem', marginBottom: '0.75rem' }}>📥</span>
+                            <div className="upload-zone-title" style={{ fontSize: '1rem' }}>
+                                {importing ? 'Importing file...' : 'Drop a CSV or JSON file here'}
+                            </div>
+                            <div className="upload-zone-subtitle">
+                                {importing ? 'Please wait while we import your knowledge base entries.' : 'Or click anywhere in this area to choose a file.'}
+                            </div>
+                        </div>
                     </div>
                 </div>
             )}

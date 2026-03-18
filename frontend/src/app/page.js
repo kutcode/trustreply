@@ -25,7 +25,7 @@ const AGENT_MODES = [
   {
     name: 'agent',
     label: 'Agent',
-    description: 'AI agent reviews all questions using document context and KB. Can override semantic matches with better context-aware answers.',
+    description: 'AI-first mode: agent handles all answers using document context + KB and flags uncertain fields (no semantic auto-match fallback).',
   },
 ];
 
@@ -80,7 +80,7 @@ export default function UploadPage() {
   const [currentBatch, setCurrentBatch] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [selectedParserProfile, setSelectedParserProfile] = useState('default');
-  const [selectedAgentMode, setSelectedAgentMode] = useState('off');
+  const [selectedAgentMode, setSelectedAgentMode] = useState('agent');
   const [agentInstructions, setAgentInstructions] = useState('');
   const [agentAvailable, setAgentAvailable] = useState(false);
   const [maxBulkFiles, setMaxBulkFiles] = useState(FALLBACK_MAX_BULK_FILES);
@@ -114,7 +114,7 @@ export default function UploadPage() {
     getSettings()
       .then((data) => {
         setSelectedParserProfile(data.default_parser_profile || 'default');
-        setSelectedAgentMode(data.agent_default_mode || 'off');
+        setSelectedAgentMode(data.agent_default_mode || 'agent');
         setAgentAvailable(Boolean(data.agent_available));
         setMaxBulkFiles(data.max_bulk_files || FALLBACK_MAX_BULK_FILES);
       })
@@ -392,9 +392,9 @@ export default function UploadPage() {
         </div>
       )}
 
-      <div className="page-header">
-        <h1>TrustReply</h1>
-        <p>
+      <div className="page-header" style={{ textAlign: 'center', marginBottom: '2.5rem' }}>
+        <h1 style={{ fontSize: '2.5rem', marginBottom: '0.65rem' }}>TrustReply</h1>
+        <p style={{ maxWidth: '600px', margin: '0 auto' }}>
           Upload one or many .docx, .pdf, or .csv questionnaires and TrustReply will auto-fill answers from your knowledge base.
         </p>
       </div>
@@ -991,8 +991,11 @@ export default function UploadPage() {
         </div>
       )}
 
-      <div className="card" style={{ marginTop: '2rem' }}>
-        <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>AI Model Thinking</div>
+      <div className="card card-accent-left" style={{ marginTop: '2rem' }}>
+        <div className="section-header" style={{ marginBottom: '0.75rem', paddingBottom: '0.6rem' }}>
+          <div className="section-header-icon">💭</div>
+          <h2>AI Model Thinking</h2>
+        </div>
         <div style={{ color: 'var(--text-muted)', fontSize: '0.84rem', marginBottom: '0.6rem' }}>
           Live trace while uploads are processing.
         </div>
