@@ -61,6 +61,7 @@ class JobResponse(BaseModel):
     agent_trace: list[dict] | None
     agent_error: str | None
     agent_model: str | None
+    review_status: str | None = None
     uploaded_at: datetime.datetime
     completed_at: datetime.datetime | None
 
@@ -124,6 +125,45 @@ class FlaggedSyncResponse(BaseModel):
     synced_occurrences: int
     synced_groups: int
     remaining_unresolved: int
+
+
+# ── Question Results (Review Queue) ──────────────────────────────────
+
+class QuestionResultResponse(BaseModel):
+    id: int
+    job_id: int
+    question_index: int
+    question_text: str
+    answer_text: str | None
+    edited_answer_text: str | None
+    confidence_score: float | None
+    source: str | None
+    kb_pair_id: int | None
+    location_info: dict | None
+    item_type: str | None
+    reviewed: bool
+    created_at: datetime.datetime
+
+    class Config:
+        from_attributes = True
+
+
+class QuestionResultListResponse(BaseModel):
+    items: list[QuestionResultResponse]
+    total: int
+    reviewed_count: int
+    unreviewed_count: int
+
+
+class QuestionResultUpdate(BaseModel):
+    answer_text: str = Field(..., min_length=1)
+
+
+class FinalizeJobResponse(BaseModel):
+    job_id: int
+    review_status: str
+    output_filename: str
+    total_edited: int
 
 
 # ── Settings ─────────────────────────────────────────────────────────

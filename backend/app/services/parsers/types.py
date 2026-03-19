@@ -29,6 +29,8 @@ class ExtractedItem:
     answer_text: str | None = None  # populated after matching
     source_block_id: str | None = None
     confidence: float | None = None
+    matched_qa_id: int | None = None
+    matched_source: str | None = None  # kb_match | resolved_flagged | agent
     parser_strategy: str | None = None
     raw_text: str | None = None
 

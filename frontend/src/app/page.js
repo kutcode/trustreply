@@ -11,6 +11,11 @@ import {
   getDownloadUrl,
   getBatchDownloadUrl,
   getSettings,
+  listQuestionResults,
+  updateQuestionResult,
+  approveQuestionResult,
+  approveAllQuestionResults,
+  finalizeJob,
 } from '@/lib/api';
 
 const SUPPORTED_EXTENSIONS = new Set(['docx', 'pdf', 'csv']);
@@ -107,6 +112,11 @@ export default function UploadPage() {
   const [toast, setToast] = useState(null);
   const [showPresetMenu, setShowPresetMenu] = useState(false);
   const [customPresets, setCustomPresets] = useState([]);
+  const [questionResults, setQuestionResults] = useState(null);
+  const [editingQuestionId, setEditingQuestionId] = useState(null);
+  const [editingText, setEditingText] = useState('');
+  const [reviewFilter, setReviewFilter] = useState('all');
+  const [finalizing, setFinalizing] = useState(false);
   const pollRef = useRef(null);
   const thinkingRef = useRef(null);
   const presetMenuRef = useRef(null);
@@ -184,6 +194,83 @@ export default function UploadPage() {
     saveCustomPresets(updated);
   };
 
+  // ── Review Queue Handlers ─────────────────────────────────
+
+  const loadQuestionResults = useCallback(async (jobId) => {
+    try {
+      const data = await listQuestionResults(jobId);
+      setQuestionResults(data.total > 0 ? data : null);
+    } catch {
+      setQuestionResults(null);
+    }
+  }, []);
+
+  const handleApprove = async (questionId) => {
+    if (!currentJob) return;
+    try {
+      await approveQuestionResult(currentJob.id, questionId);
+      await loadQuestionResults(currentJob.id);
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const handleApproveAll = async () => {
+    if (!currentJob) return;
+    try {
+      await approveAllQuestionResults(currentJob.id);
+      await loadQuestionResults(currentJob.id);
+      showToast('All questions approved', 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const handleStartEdit = (qr) => {
+    setEditingQuestionId(qr.id);
+    setEditingText(qr.edited_answer_text || qr.answer_text || '');
+  };
+
+  const handleSaveEdit = async () => {
+    if (!currentJob || !editingQuestionId) return;
+    try {
+      await updateQuestionResult(currentJob.id, editingQuestionId, editingText);
+      setEditingQuestionId(null);
+      setEditingText('');
+      await loadQuestionResults(currentJob.id);
+      showToast('Answer updated', 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingQuestionId(null);
+    setEditingText('');
+  };
+
+  const handleFinalize = async () => {
+    if (!currentJob) return;
+    setFinalizing(true);
+    try {
+      await finalizeJob(currentJob.id);
+      showToast('Document finalized. Downloading...', 'success');
+      window.open(getDownloadUrl(currentJob.id), '_blank');
+      refreshJobs();
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setFinalizing(false);
+    }
+  };
+
+  const filteredQuestionResults = useMemo(() => {
+    if (!questionResults?.items) return [];
+    if (reviewFilter === 'unreviewed') return questionResults.items.filter((q) => !q.reviewed);
+    if (reviewFilter === 'low_confidence') return questionResults.items.filter((q) => q.confidence_score !== null && q.confidence_score < 0.7);
+    return questionResults.items;
+  }, [questionResults, reviewFilter]);
+
   const pollJob = useCallback(async (jobId) => {
     try {
       const job = await getJob(jobId);
@@ -239,6 +326,9 @@ export default function UploadPage() {
     stopPolling();
     setCurrentJob(null);
     setCurrentBatch(null);
+    setQuestionResults(null);
+    setEditingQuestionId(null);
+    setReviewFilter('all');
   }, [stopPolling]);
 
   const handleSelectedFiles = useCallback((incomingFiles) => {
@@ -338,6 +428,14 @@ export default function UploadPage() {
     setDragover(false);
     handleSelectedFiles(e.dataTransfer.files);
   };
+
+  useEffect(() => {
+    if (currentJob?.status === 'done') {
+      loadQuestionResults(currentJob.id);
+    } else {
+      setQuestionResults(null);
+    }
+  }, [currentJob?.status, currentJob?.id, loadQuestionResults]);
 
   useEffect(() => {
     return () => stopPolling();
@@ -731,18 +829,155 @@ export default function UploadPage() {
                       fontSize: '0.9rem',
                     }}
                   >
-                    {currentJob.flagged_questions_count} question(s) need review. The downloaded document now marks those answers with a review-required placeholder instead of leaving them blank.
+                    {currentJob.flagged_questions_count} question(s) need review. The downloaded document marks those answers with a review-required placeholder.
                   </div>
                 )}
-                <div style={{ textAlign: 'center' }}>
-                  <a
-                    href={getDownloadUrl(currentJob.id)}
-                    className="btn btn-success btn-lg"
-                    download
-                  >
-                    Download Filled File
-                  </a>
-                </div>
+
+                {/* ── Review Queue ─────────────────────────── */}
+                {questionResults && questionResults.total > 0 ? (
+                  <div style={{ marginTop: '1rem' }}>
+                    <div className="review-toolbar">
+                      <span style={{ fontWeight: 700 }}>
+                        {questionResults.reviewed_count}/{questionResults.total} reviewed
+                      </span>
+                      <select
+                        className="form-select"
+                        style={{ width: 'auto', minWidth: '160px' }}
+                        value={reviewFilter}
+                        onChange={(e) => setReviewFilter(e.target.value)}
+                      >
+                        <option value="all">All Questions ({questionResults.total})</option>
+                        <option value="unreviewed">Needs Review ({questionResults.unreviewed_count})</option>
+                        <option value="low_confidence">Low Confidence</option>
+                      </select>
+                      <button className="btn btn-sm btn-secondary" onClick={handleApproveAll} disabled={questionResults.unreviewed_count === 0}>
+                        Approve All
+                      </button>
+                    </div>
+
+                    <div style={{ overflowX: 'auto' }}>
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th style={{ width: '3rem' }}>#</th>
+                            <th style={{ width: '30%' }}>Question</th>
+                            <th style={{ width: '35%' }}>Answer</th>
+                            <th style={{ width: '7rem' }}>Confidence</th>
+                            <th style={{ width: '6rem' }}>Source</th>
+                            <th style={{ width: '10rem' }}>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredQuestionResults.map((qr) => (
+                            <tr key={qr.id} className={qr.reviewed ? 'row-reviewed' : ''}>
+                              <td>{qr.question_index + 1}</td>
+                              <td style={{ fontSize: '0.85rem' }}>{qr.question_text}</td>
+                              <td style={{ fontSize: '0.85rem' }}>
+                                {editingQuestionId === qr.id ? (
+                                  <div>
+                                    <textarea
+                                      className="inline-edit-area"
+                                      value={editingText}
+                                      onChange={(e) => setEditingText(e.target.value)}
+                                      rows={3}
+                                    />
+                                    <div className="inline-edit-actions">
+                                      <button className="btn btn-sm btn-primary" onClick={handleSaveEdit}>Save</button>
+                                      <button className="btn btn-sm btn-secondary" onClick={handleCancelEdit}>Cancel</button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <span style={{ color: qr.answer_text ? 'var(--text-primary)' : 'var(--error)' }}>
+                                    {qr.edited_answer_text || qr.answer_text || 'No answer'}
+                                  </span>
+                                )}
+                              </td>
+                              <td>
+                                {(() => {
+                                  const score = qr.confidence_score;
+                                  if (score == null) return <span className="confidence-badge confidence-unknown">N/A</span>;
+                                  if (score >= 0.85) return <span className="confidence-badge confidence-high">{Math.round(score * 100)}%</span>;
+                                  if (score >= 0.70) return <span className="confidence-badge confidence-medium">{Math.round(score * 100)}%</span>;
+                                  return <span className="confidence-badge confidence-low">{Math.round(score * 100)}%</span>;
+                                })()}
+                              </td>
+                              <td>
+                                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                                  {qr.source === 'kb_match' ? 'KB' : qr.source === 'resolved_flagged' ? 'Resolved' : qr.source === 'agent' ? 'Agent' : 'Unmatched'}
+                                </span>
+                              </td>
+                              <td>
+                                <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                                  {!qr.reviewed && (
+                                    <button
+                                      className="btn btn-sm btn-success"
+                                      onClick={() => handleApprove(qr.id)}
+                                      title="Approve"
+                                    >
+                                      ✓
+                                    </button>
+                                  )}
+                                  <button
+                                    className="btn btn-sm btn-secondary"
+                                    onClick={() => handleStartEdit(qr)}
+                                    title="Edit answer"
+                                  >
+                                    ✎
+                                  </button>
+                                  {qr.reviewed && (
+                                    <span className="status-badge status-done" style={{ fontSize: '0.72rem' }}>Reviewed</span>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                          {filteredQuestionResults.length === 0 && (
+                            <tr>
+                              <td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
+                                {reviewFilter === 'unreviewed' ? 'All questions have been reviewed!' : 'No questions match this filter.'}
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
+                      <button
+                        className="btn btn-success btn-lg"
+                        onClick={handleFinalize}
+                        disabled={finalizing}
+                      >
+                        {finalizing ? 'Generating...' : 'Finalize & Download'}
+                      </button>
+                      {questionResults.unreviewed_count > 0 && (
+                        <div style={{ color: 'var(--warning)', fontSize: '0.85rem', marginTop: '0.5rem' }}>
+                          {questionResults.unreviewed_count} question(s) not yet reviewed
+                        </div>
+                      )}
+                      <div style={{ marginTop: '0.5rem' }}>
+                        <a
+                          href={getDownloadUrl(currentJob.id)}
+                          className="btn btn-sm btn-secondary"
+                          download
+                          style={{ fontSize: '0.82rem' }}
+                        >
+                          Download without review
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ textAlign: 'center' }}>
+                    <a
+                      href={getDownloadUrl(currentJob.id)}
+                      className="btn btn-success btn-lg"
+                      download
+                    >
+                      Download Filled File
+                    </a>
+                  </div>
+                )}
               </>
             )}
 

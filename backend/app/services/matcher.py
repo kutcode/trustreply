@@ -66,6 +66,8 @@ async def match_questions(
             reused_answer = resolved_answers.get(normalize_question_key(item.question_text))
             if reused_answer:
                 item.answer_text = reused_answer[0]
+                item.confidence = 1.0
+                item.matched_source = "resolved_flagged"
                 continue
             flagged.append(FlaggedQuestion(
                 job_id=job_id,
@@ -102,11 +104,16 @@ async def match_questions(
         if best_score >= threshold:
             # Match found — populate the answer
             item.answer_text = best_qa.answer
+            item.confidence = best_score
+            item.matched_qa_id = best_qa.id
+            item.matched_source = "kb_match"
             matched_items.append(item)
         else:
             reused_answer = resolved_answers.get(normalize_question_key(item.question_text))
             if reused_answer:
                 item.answer_text = reused_answer[0]
+                item.confidence = 1.0
+                item.matched_source = "resolved_flagged"
                 matched_items.append(item)
                 continue
 

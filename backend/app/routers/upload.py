@@ -13,9 +13,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db, async_session, init_db
 from app.config import settings
-from app.models import ProcessingJob, FlaggedQuestion
-from app.schemas import JobBatchResponse, JobResponse, JobListResponse, TroubleshootResponse
+from app.models import ProcessingJob, FlaggedQuestion, QuestionResult
+from app.schemas import (
+    JobBatchResponse, JobResponse, JobListResponse, TroubleshootResponse,
+    QuestionResultResponse, QuestionResultListResponse, QuestionResultUpdate,
+    FinalizeJobResponse,
+)
 from app.services.parser import (
+    ExtractedItem,
+    RunFormat,
     get_parse_options,
     get_parser_profile_names,
     get_parser_profiles,
@@ -35,6 +41,39 @@ from app.services.agent import (
 from app.utils.questions import normalize_question_key
 
 router = APIRouter(prefix="/api", tags=["upload"])
+
+
+def _serialize_run_format(fmt: RunFormat | None) -> dict | None:
+    """Convert a RunFormat dataclass to a JSON-serializable dict."""
+    if fmt is None:
+        return None
+    result: dict = {}
+    if fmt.font_name:
+        result["font_name"] = fmt.font_name
+    if fmt.font_size:
+        result["font_size"] = str(fmt.font_size)
+    if fmt.bold is not None:
+        result["bold"] = fmt.bold
+    if fmt.italic is not None:
+        result["italic"] = fmt.italic
+    if fmt.underline is not None:
+        result["underline"] = fmt.underline
+    if fmt.color_rgb:
+        result["color_rgb"] = str(fmt.color_rgb)
+    return result or None
+
+
+def _deserialize_run_format(data: dict | None) -> RunFormat | None:
+    """Reconstruct a RunFormat from serialized JSON."""
+    if not data:
+        return None
+    fmt = RunFormat()
+    fmt.font_name = data.get("font_name")
+    fmt.bold = data.get("bold")
+    fmt.italic = data.get("italic")
+    fmt.underline = data.get("underline")
+    # font_size and color_rgb are stored as strings; generator handles None gracefully
+    return fmt
 
 ALLOWED_EXTENSIONS = {".docx", ".pdf", ".csv"}
 
@@ -477,6 +516,35 @@ async def _process_document(
             job.matched_questions = sum(1 for item in items if item.answer_text is not None)
             job.flagged_questions_count = len(flagged)
 
+            # Store per-question results for confidence visibility & review queue
+            for idx, item in enumerate(items):
+                source = "unmatched"
+                if item.answer_text is not None:
+                    if item.matched_source:
+                        source = item.matched_source
+                    elif job.agent_mode != AGENT_MODE_OFF:
+                        source = "agent"
+                    else:
+                        source = "kb_match"
+
+                qr = QuestionResult(
+                    job_id=job_id,
+                    question_index=idx,
+                    question_text=item.question_text,
+                    answer_text=item.answer_text,
+                    confidence_score=item.confidence,
+                    source=source,
+                    kb_pair_id=item.matched_qa_id,
+                    location_info=item.location,
+                    formatting_info=_serialize_run_format(item.formatting),
+                    item_type=item.item_type,
+                    reviewed=False,
+                )
+                db.add(qr)
+
+            job.review_status = "pending"
+            await db.commit()
+
             output_name, _ = _output_file_spec(job.original_filename, suffix)
             output_path = settings.output_dir / output_name
 
@@ -859,4 +927,147 @@ async def download_result(job_id: int, db: AsyncSession = Depends(get_db)):
         path=str(output_path),
         filename=download_name,
         media_type=_media_type_for_path(output_path),
+    )
+
+
+# ── Review Queue Endpoints ────────────────────────────────────────────
+
+
+@router.get("/jobs/{job_id}/questions", response_model=QuestionResultListResponse)
+async def list_question_results(job_id: int, db: AsyncSession = Depends(get_db)):
+    """List all per-question results for a completed job."""
+    job = await db.get(ProcessingJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    result = await db.execute(
+        select(QuestionResult)
+        .where(QuestionResult.job_id == job_id)
+        .order_by(QuestionResult.question_index.asc())
+    )
+    items = result.scalars().all()
+    reviewed_count = sum(1 for q in items if q.reviewed)
+    return QuestionResultListResponse(
+        items=items,
+        total=len(items),
+        reviewed_count=reviewed_count,
+        unreviewed_count=len(items) - reviewed_count,
+    )
+
+
+@router.put("/jobs/{job_id}/questions/{question_id}", response_model=QuestionResultResponse)
+async def update_question_result(
+    job_id: int,
+    question_id: int,
+    body: QuestionResultUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Edit an answer before finalizing."""
+    qr = await db.get(QuestionResult, question_id)
+    if not qr or qr.job_id != job_id:
+        raise HTTPException(status_code=404, detail="Question result not found")
+
+    qr.edited_answer_text = body.answer_text
+    qr.reviewed = True
+
+    job = await db.get(ProcessingJob, job_id)
+    if job and job.review_status != "in_review":
+        job.review_status = "in_review"
+
+    await db.commit()
+    await db.refresh(qr)
+    return qr
+
+
+@router.post("/jobs/{job_id}/questions/{question_id}/approve", response_model=QuestionResultResponse)
+async def approve_question_result(
+    job_id: int,
+    question_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve an answer without editing."""
+    qr = await db.get(QuestionResult, question_id)
+    if not qr or qr.job_id != job_id:
+        raise HTTPException(status_code=404, detail="Question result not found")
+
+    qr.reviewed = True
+    await db.commit()
+    await db.refresh(qr)
+    return qr
+
+
+@router.post("/jobs/{job_id}/questions/approve-all")
+async def approve_all_question_results(job_id: int, db: AsyncSession = Depends(get_db)):
+    """Bulk-approve all unreviewed questions for a job."""
+    job = await db.get(ProcessingJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    result = await db.execute(
+        select(QuestionResult).where(
+            QuestionResult.job_id == job_id,
+            QuestionResult.reviewed.is_(False),
+        )
+    )
+    items = result.scalars().all()
+    for qr in items:
+        qr.reviewed = True
+    await db.commit()
+    return {"approved": len(items)}
+
+
+@router.post("/jobs/{job_id}/finalize", response_model=FinalizeJobResponse)
+async def finalize_job(job_id: int, db: AsyncSession = Depends(get_db)):
+    """Regenerate the output document incorporating any edited answers."""
+    job = await db.get(ProcessingJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != "done":
+        raise HTTPException(status_code=400, detail="Job is not complete")
+
+    result = await db.execute(
+        select(QuestionResult)
+        .where(QuestionResult.job_id == job_id)
+        .order_by(QuestionResult.question_index.asc())
+    )
+    question_results = result.scalars().all()
+
+    if not question_results:
+        raise HTTPException(status_code=400, detail="No question results to finalize")
+
+    rebuilt_items: list[ExtractedItem] = []
+    total_edited = 0
+    for qr in question_results:
+        final_answer = qr.edited_answer_text if qr.edited_answer_text else qr.answer_text
+        if qr.edited_answer_text:
+            total_edited += 1
+        rebuilt_items.append(ExtractedItem(
+            question_text=qr.question_text,
+            item_type=qr.item_type or "paragraph",
+            location=qr.location_info or {},
+            formatting=_deserialize_run_format(qr.formatting_info),
+            answer_text=final_answer,
+        ))
+
+    source_path = settings.upload_dir / job.stored_filename
+    suffix = source_path.suffix.lower()
+    output_name, _ = _output_file_spec(job.original_filename, suffix)
+    output_path = settings.output_dir / output_name
+
+    if suffix == ".docx":
+        generate_filled_docx(source_path, output_path, rebuilt_items)
+    elif suffix == ".pdf":
+        generate_docx_from_pdf_items(output_path, rebuilt_items)
+    elif suffix == ".csv":
+        generate_filled_csv(source_path, output_path, rebuilt_items)
+
+    job.output_filename = output_name
+    job.review_status = "finalized"
+    await db.commit()
+
+    return FinalizeJobResponse(
+        job_id=job.id,
+        review_status="finalized",
+        output_filename=output_name,
+        total_edited=total_edited,
     )

@@ -54,7 +54,10 @@ class ProcessingJob(Base):
     uploaded_at = Column(DateTime, default=datetime.datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
 
+    review_status = Column(String(32), default="pending")  # pending | in_review | finalized
+
     flagged_questions = relationship("FlaggedQuestion", back_populates="job", cascade="all, delete-orphan")
+    question_results = relationship("QuestionResult", back_populates="job", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<ProcessingJob id={self.id} status={self.status}>"
@@ -80,3 +83,28 @@ class FlaggedQuestion(Base):
 
     def __repr__(self):
         return f"<FlaggedQuestion id={self.id} resolved={self.resolved}>"
+
+
+class QuestionResult(Base):
+    """Per-question result with confidence score and review status."""
+    __tablename__ = "question_results"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_id = Column(Integer, ForeignKey("processing_jobs.id"), nullable=False)
+    question_index = Column(Integer, nullable=False)
+    question_text = Column(Text, nullable=False)
+    answer_text = Column(Text, nullable=True)
+    edited_answer_text = Column(Text, nullable=True)
+    confidence_score = Column(Float, nullable=True)
+    source = Column(String(50), nullable=True)  # kb_match | agent | resolved_flagged | unmatched
+    kb_pair_id = Column(Integer, nullable=True)
+    location_info = Column(JSON, nullable=True)
+    formatting_info = Column(JSON, nullable=True)
+    item_type = Column(String(50), nullable=True)
+    reviewed = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    job = relationship("ProcessingJob", back_populates="question_results")
+
+    def __repr__(self):
+        return f"<QuestionResult id={self.id} job_id={self.job_id} reviewed={self.reviewed}>"

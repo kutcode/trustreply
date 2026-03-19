@@ -48,6 +48,7 @@ async def _ensure_sqlite_job_columns(conn) -> None:
         "agent_trace": "ALTER TABLE processing_jobs ADD COLUMN agent_trace JSON",
         "agent_error": "ALTER TABLE processing_jobs ADD COLUMN agent_error TEXT",
         "agent_model": "ALTER TABLE processing_jobs ADD COLUMN agent_model VARCHAR(128)",
+        "review_status": "ALTER TABLE processing_jobs ADD COLUMN review_status VARCHAR(32) DEFAULT 'pending'",
     }
 
     for column_name, ddl in required_columns.items():

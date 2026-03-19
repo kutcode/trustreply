@@ -1214,3 +1214,84 @@ a:hover {
 .preset-dropdown-delete:hover {
   color: var(--error);
 }
+
+/* ── Confidence Badges ────────────────────────────────────────────── */
+
+.confidence-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.confidence-high {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--success);
+}
+
+.confidence-medium {
+  background: rgba(234, 179, 8, 0.15);
+  color: var(--warning);
+}
+
+.confidence-low {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--error);
+}
+
+.confidence-unknown {
+  background: var(--bg-input);
+  color: var(--text-muted);
+}
+
+/* ── Review Queue ─────────────────────────────────────────────────── */
+
+.review-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 0;
+  margin-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.review-toolbar span {
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+}
+
+.data-table tr.row-reviewed td {
+  opacity: 0.65;
+}
+
+.data-table tr.row-reviewed td:first-child {
+  border-left: 3px solid var(--success);
+}
+
+.inline-edit-area {
+  width: 100%;
+  min-height: 60px;
+  padding: 0.5rem;
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.inline-edit-area:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.inline-edit-actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
