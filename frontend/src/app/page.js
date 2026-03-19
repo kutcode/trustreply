@@ -42,6 +42,8 @@ const BUILT_IN_PRESETS = [
 ];
 
 const PRESETS_STORAGE_KEY = 'trustreply_agent_presets';
+const SESSION_JOB_KEY = 'trustreply_current_job_id';
+const SESSION_BATCH_KEY = 'trustreply_current_batch_id';
 
 function loadCustomPresets() {
   try {
@@ -156,6 +158,34 @@ export default function UploadPage() {
 
   useEffect(() => {
     setCustomPresets(loadCustomPresets());
+  }, []);
+
+  // Restore current job/batch from sessionStorage on mount (tab switch persistence)
+  useEffect(() => {
+    const savedJobId = sessionStorage.getItem(SESSION_JOB_KEY);
+    const savedBatchId = sessionStorage.getItem(SESSION_BATCH_KEY);
+
+    if (savedBatchId) {
+      getBatchJobs(savedBatchId)
+        .then((batch) => {
+          setCurrentBatch(batch);
+          const allDone = batch.items.every((j) => isFinishedStatus(j.status));
+          if (!allDone) {
+            pollRef.current = setInterval(() => pollBatch(savedBatchId), 1500);
+          }
+        })
+        .catch(() => sessionStorage.removeItem(SESSION_BATCH_KEY));
+    } else if (savedJobId) {
+      getJob(Number(savedJobId))
+        .then((job) => {
+          setCurrentJob(job);
+          if (!isFinishedStatus(job.status)) {
+            pollRef.current = setInterval(() => pollJob(job.id), 1500);
+          }
+        })
+        .catch(() => sessionStorage.removeItem(SESSION_JOB_KEY));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -329,6 +359,8 @@ export default function UploadPage() {
     setQuestionResults(null);
     setEditingQuestionId(null);
     setReviewFilter('all');
+    sessionStorage.removeItem(SESSION_JOB_KEY);
+    sessionStorage.removeItem(SESSION_BATCH_KEY);
   }, [stopPolling]);
 
   const handleSelectedFiles = useCallback((incomingFiles) => {
@@ -388,6 +420,8 @@ export default function UploadPage() {
         setCurrentBatch(null);
         setCurrentJob(job);
         setSelectedFiles([]);
+        sessionStorage.setItem(SESSION_JOB_KEY, String(job.id));
+        sessionStorage.removeItem(SESSION_BATCH_KEY);
         showToast('Document uploaded. Processing...', 'info');
         pollRef.current = setInterval(() => pollJob(job.id), 1500);
       } else {
@@ -402,6 +436,8 @@ export default function UploadPage() {
         setCurrentJob(null);
         setCurrentBatch(batch);
         setSelectedFiles([]);
+        sessionStorage.setItem(SESSION_BATCH_KEY, batch.batch_id);
+        sessionStorage.removeItem(SESSION_JOB_KEY);
         showToast(`${batch.total} documents uploaded. Processing batch...`, 'info');
         pollRef.current = setInterval(() => pollBatch(batch.batch_id), 1500);
       }
@@ -744,6 +780,28 @@ export default function UploadPage() {
               </span>
             </div>
 
+            {currentJob.agent_mode && currentJob.agent_mode !== 'off' && !isFinishedStatus(currentJob.status) && (
+              <div style={{ marginBottom: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
+                  <span style={{ fontSize: '0.9rem' }}>💭</span>
+                  <span style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>AI Thinking</span>
+                </div>
+                <textarea
+                  ref={thinkingRef}
+                  className="form-textarea"
+                  readOnly
+                  value={thinkingLogText}
+                  rows={8}
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.78rem',
+                    lineHeight: 1.45,
+                    whiteSpace: 'pre',
+                  }}
+                />
+              </div>
+            )}
+
             <div className="progress-bar-wrapper" style={{ marginBottom: '1rem' }}>
               <div className="progress-bar-fill" style={{ width: `${singleJobProgress}%` }} />
             </div>
@@ -1084,6 +1142,28 @@ export default function UploadPage() {
               );
             })()}
 
+            {batchSummary.items.some((j) => j.agent_mode && j.agent_mode !== 'off') && (batchSummary.processingCount > 0 || batchSummary.pendingCount > 0) && (
+              <div style={{ marginBottom: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
+                  <span style={{ fontSize: '0.9rem' }}>💭</span>
+                  <span style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>AI Thinking</span>
+                </div>
+                <textarea
+                  ref={thinkingRef}
+                  className="form-textarea"
+                  readOnly
+                  value={thinkingLogText}
+                  rows={8}
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.78rem',
+                    lineHeight: 1.45,
+                    whiteSpace: 'pre',
+                  }}
+                />
+              </div>
+            )}
+
             <div className="progress-bar-wrapper" style={{ marginBottom: '1rem' }}>
               <div className="progress-bar-fill" style={{ width: `${batchSummary.progressPercent}%` }} />
             </div>
@@ -1324,28 +1404,6 @@ export default function UploadPage() {
         </div>
       )}
 
-      <div className="card card-accent-left" style={{ marginTop: '2rem' }}>
-        <div className="section-header" style={{ marginBottom: '0.75rem', paddingBottom: '0.6rem' }}>
-          <div className="section-header-icon">💭</div>
-          <h2>AI Model Thinking</h2>
-        </div>
-        <div style={{ color: 'var(--text-muted)', fontSize: '0.84rem', marginBottom: '0.6rem' }}>
-          Live trace while uploads are processing.
-        </div>
-        <textarea
-          ref={thinkingRef}
-          className="form-textarea"
-          readOnly
-          value={thinkingLogText}
-          rows={12}
-          style={{
-            fontFamily: 'var(--font-mono)',
-            fontSize: '0.78rem',
-            lineHeight: 1.45,
-            whiteSpace: 'pre',
-          }}
-        />
-      </div>
     </div>
   );
 }
