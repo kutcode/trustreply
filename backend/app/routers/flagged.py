@@ -252,6 +252,43 @@ async def sync_flagged_questions(
     return await _sync_unresolved_flagged_with_knowledge_base(db, job_id=job_id)
 
 
+@router.post("/deduplicate")
+async def deduplicate_flagged(
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove duplicate flagged question rows, keeping one per normalized question per job.
+
+    The list endpoint already groups duplicates visually, but this cleans
+    the actual DB rows so the same question from the same job isn't stored
+    more than once.
+    """
+
+    result = await db.execute(select(FlaggedQuestion).order_by(FlaggedQuestion.created_at.asc()))
+    all_flags = result.scalars().all()
+
+    seen: dict[tuple[str, int], int] = {}  # (normalized_key, job_id) -> kept id
+    to_delete: list[int] = []
+
+    for fq in all_flags:
+        key = (normalize_question_key(fq.extracted_question), fq.job_id)
+        if key in seen:
+            to_delete.append(fq.id)
+        else:
+            seen[key] = fq.id
+
+    if to_delete:
+        await db.execute(
+            FlaggedQuestion.__table__.delete().where(FlaggedQuestion.id.in_(to_delete))
+        )
+        await db.commit()
+
+    return {
+        "total_before": len(all_flags),
+        "duplicates_removed": len(to_delete),
+        "total_after": len(all_flags) - len(to_delete),
+    }
+
+
 @router.get("/{flag_id}", response_model=FlaggedQuestionResponse)
 async def get_flagged(flag_id: int, db: AsyncSession = Depends(get_db)):
     """Get a single flagged question."""

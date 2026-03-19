@@ -6,6 +6,7 @@ import {
     resolveFlaggedQuestion,
     dismissFlaggedQuestion,
     dismissFlaggedQuestionsBulk,
+    deduplicateFlaggedQuestions,
     listCategories,
     getFlaggedExportUrl,
     syncFlaggedQuestions,
@@ -27,6 +28,7 @@ export default function FlaggedPage() {
     const [showNewCategoryInput, setShowNewCategoryInput] = useState(false);
     const [newCategoryName, setNewCategoryName] = useState('');
     const [syncing, setSyncing] = useState(false);
+    const [deduplicating, setDeduplicating] = useState(false);
     const [selectedIds, setSelectedIds] = useState([]);
     const [confirmAction, setConfirmAction] = useState(null);
 
@@ -199,6 +201,26 @@ export default function FlaggedPage() {
         }
     };
 
+    const handleDeduplicate = async () => {
+        setDeduplicating(true);
+        try {
+            const result = await deduplicateFlaggedQuestions();
+            if (result.duplicates_removed > 0) {
+                showToast(
+                    `Removed ${result.duplicates_removed} duplicate row(s). ${result.total_after} remaining.`,
+                    'success',
+                );
+            } else {
+                showToast('No duplicate rows found.', 'info');
+            }
+            loadData();
+        } catch (err) {
+            showToast(`❌ ${err.message}`, 'error');
+        } finally {
+            setDeduplicating(false);
+        }
+    };
+
     const resolvedFilterValue =
         filter === 'all' ? null : filter === 'resolved' ? true : false;
 
@@ -254,6 +276,19 @@ export default function FlaggedPage() {
                     disabled={syncing}
                 >
                     {syncing ? 'Syncing…' : '↻ Sync with KB'}
+                </button>
+                <button
+                    className="btn btn-sm btn-secondary"
+                    onClick={handleDeduplicate}
+                    disabled={deduplicating}
+                >
+                    {deduplicating ? 'Cleaning…' : '🧹 Remove Duplicates'}
+                </button>
+                <button
+                    className="btn btn-sm btn-secondary"
+                    onClick={loadData}
+                >
+                    ↻ Refresh
                 </button>
             </div>
 

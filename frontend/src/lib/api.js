@@ -453,6 +453,15 @@ export async function dismissFlaggedQuestion(id) {
     return res.json();
 }
 
+export async function deduplicateFlaggedQuestions() {
+    const res = await apiFetch('/api/flagged/deduplicate', { method: 'POST' });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to deduplicate');
+    }
+    return res.json();
+}
+
 export async function dismissFlaggedQuestionsBulk(ids) {
     const res = await apiFetch('/api/flagged/dismiss-bulk', {
         method: 'POST',
