@@ -47,21 +47,28 @@ More examples are documented in [docs/USE_CASES.md](/Users/kutluhanbayram/Deskto
 2. Upload one file or a batch of questionnaire documents or CSV questionnaires.
 3. TrustReply parses the document and matches questions to known answers.
 4. Optional agent mode can research context, fill unresolved answers, and flag uncertain prompts.
-5. Matched answers are written into the output file.
-6. Unresolved questions are grouped in the Flagged Questions queue.
-7. Export missing questions as CSV, fill in answers, and re-import them.
-8. Sync flagged questions with the updated knowledge base.
+5. Review auto-filled answers in the inline review queue with confidence scores.
+6. Edit or approve answers, then finalize and download the completed document.
+7. Unresolved questions are grouped in the Flagged Questions queue.
+8. Export missing questions as CSV, fill in answers, and re-import them.
+9. Sync flagged questions with the updated knowledge base.
 
 ## Key Features
 
-- **Knowledge Base Management**: CRUD, categories, search, CSV/JSON import
+- **Knowledge Base Management**: CRUD, categories, search, CSV/JSON import/export, duplicate detection
 - **Semantic Matching**: embedding-based question matching for paraphrased prompts
+- **Confidence Score Visibility**: per-answer confidence badges (green/yellow/red) so reviewers focus on low-confidence answers
+- **Answer Review Queue**: inline review table after processing — approve, edit, or override any answer before downloading
+- **Finalize & Download**: regenerate the output document with edited answers after review
 - **AI Agent Mode**: default `agent` mode with contextual research/fill workflows
 - **Provider Model Discovery**: Settings can pull model dropdown options directly from OpenAI and Claude APIs
+- **Test Connection**: verify AI provider credentials from the Settings page
+- **Agent Instruction Presets**: built-in and custom instruction presets for common answering styles
 - **Parser Profiles**: multiple layout strategies for document and CSV questionnaire structures
 - **Troubleshooting**: compare parser profiles plus optional AI diagnostics and trace output
 - **Human-in-the-loop Review**: grouped flagged questions, resolution flow, and KB sync
 - **Batch Processing**: upload up to 50 files in one batch, track per-file results, and download ZIP outputs
+- **Confirmation Dialogs**: styled confirmation modals for destructive actions (delete, bulk dismiss)
 - **Review Placeholders**: unresolved items are visibly marked in outputs instead of silently left blank
 
 ## Architecture
@@ -184,7 +191,7 @@ The repository includes example content under [test-data](/Users/kutluhanbayram/
 
 ## Open Source
 
-TrustReply is released under the Apache 2.0 License. That means other developers can use, modify, and distribute the software under the terms of that license.
+TrustReply is released under the MIT License. That means other developers can use, modify, and distribute the software under the terms of that license.
 
 Maintainers still control what gets merged into the official upstream project. If you want to contribute improvements back to the main repository, please follow [CONTRIBUTING.md](/Users/kutluhanbayram/Desktop/AI%20QUESTIONNAIRE%20FILLER%20-%20DOCS/CONTRIBUTING.md).
 
