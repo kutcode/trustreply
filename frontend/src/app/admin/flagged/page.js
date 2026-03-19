@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
     listFlaggedQuestions,
     resolveFlaggedQuestion,
@@ -15,6 +15,7 @@ export default function FlaggedPage() {
     const [flagged, setFlagged] = useState([]);
     const [total, setTotal] = useState(0);
     const [filter, setFilter] = useState('unresolved'); // 'all' | 'unresolved' | 'resolved'
+    const [searchQuery, setSearchQuery] = useState('');
     const [toast, setToast] = useState(null);
 
     // Resolve modal
@@ -127,7 +128,18 @@ export default function FlaggedPage() {
         }
     };
 
-    const unresolvedVisibleIds = flagged.filter((item) => !item.resolved).map((item) => item.id);
+    const filteredFlagged = useMemo(() => {
+        if (!searchQuery.trim()) return flagged;
+        const q = searchQuery.toLowerCase().trim();
+        return flagged.filter((fq) =>
+            fq.extracted_question?.toLowerCase().includes(q)
+            || fq.best_match_question?.toLowerCase().includes(q)
+            || fq.resolved_answer?.toLowerCase().includes(q)
+            || fq.filenames?.some((fn) => fn.toLowerCase().includes(q))
+        );
+    }, [flagged, searchQuery]);
+
+    const unresolvedVisibleIds = filteredFlagged.filter((item) => !item.resolved).map((item) => item.id);
     const allVisibleUnresolvedSelected =
         unresolvedVisibleIds.length > 0 && unresolvedVisibleIds.every((id) => selectedIds.includes(id));
 
@@ -219,7 +231,7 @@ export default function FlaggedPage() {
             </div>
 
             {/* Filter tabs */}
-            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
+            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
                 {['unresolved', 'resolved', 'all'].map((f) => (
                     <button
                         key={f}
@@ -243,6 +255,23 @@ export default function FlaggedPage() {
                 >
                     {syncing ? 'Syncing…' : '↻ Sync with KB'}
                 </button>
+            </div>
+
+            {/* Search */}
+            <div style={{ marginBottom: '1.25rem' }}>
+                <input
+                    className="form-input"
+                    type="text"
+                    placeholder="Search flagged questions, answers, or filenames..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    style={{ maxWidth: '480px', width: '100%' }}
+                />
+                {searchQuery.trim() && (
+                    <div style={{ fontSize: '0.84rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+                        Showing {filteredFlagged.length} of {flagged.length} question group(s)
+                    </div>
+                )}
             </div>
 
             {unresolvedVisibleIds.length > 0 && (
@@ -282,9 +311,9 @@ export default function FlaggedPage() {
             </div>
 
             {/* Flagged list */}
-            {flagged.length > 0 ? (
+            {filteredFlagged.length > 0 ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                    {flagged.map((fq) => (
+                    {filteredFlagged.map((fq) => (
                         <div key={fq.id} className="card">
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
                                 <div style={{ display: 'flex', gap: '0.65rem', alignItems: 'flex-start' }}>
@@ -384,13 +413,19 @@ export default function FlaggedPage() {
                 </div>
             ) : (
                 <div className="empty-state">
-                    <div className="empty-state-icon">✅</div>
+                    <div className="empty-state-icon">{searchQuery.trim() ? '🔍' : '✅'}</div>
                     <div className="empty-state-title">
-                        {filter === 'unresolved'
-                            ? 'No unresolved flagged questions'
-                            : 'No flagged questions found'}
+                        {searchQuery.trim()
+                            ? 'No flagged questions match your search'
+                            : filter === 'unresolved'
+                                ? 'No unresolved flagged questions'
+                                : 'No flagged questions found'}
                     </div>
-                    <p>Questions that can&apos;t be matched will appear here after processing documents.</p>
+                    <p>
+                        {searchQuery.trim()
+                            ? 'Try a different search term or clear the search.'
+                            : 'Questions that can\'t be matched will appear here after processing documents.'}
+                    </p>
                 </div>
             )}
 
