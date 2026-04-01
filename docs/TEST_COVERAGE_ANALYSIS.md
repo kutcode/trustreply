@@ -2,17 +2,25 @@
 
 ## Current State
 
-The project has **93 backend test cases** across 5 test files using pytest. The frontend (Next.js/React) has **zero tests** — no test framework is even configured.
+The project has **278 backend test cases** across 13 test files using pytest (93 original + 185 new). The frontend (Next.js/React) has **zero tests** — no test framework is even configured.
 
 ### Backend Test Inventory
 
-| Test File | Module Tested | Test Cases | Type |
-|-----------|--------------|------------|------|
-| `test_api.py` | FastAPI endpoints | 42 | Integration |
-| `test_parser.py` | Document parsing | 29 | Unit |
-| `test_generator.py` | Document generation | 10 | Unit |
-| `test_matcher.py` | Semantic matching | 6 | Integration |
-| `test_embeddings.py` | Embedding utilities | 6 | Unit |
+| Test File | Module Tested | Test Cases | Type | Status |
+|-----------|--------------|------------|------|--------|
+| `test_api.py` | FastAPI endpoints | 42 | Integration | Original |
+| `test_parser.py` | Document parsing | 29 | Unit | Original |
+| `test_generator.py` | Document generation | 10 | Unit | Original |
+| `test_matcher.py` | Semantic matching | 6 | Integration | Original |
+| `test_embeddings.py` | Embedding utilities | 6 | Unit | Original |
+| `test_questions.py` | Question normalization | 22 | Unit | **New** |
+| `test_csv_files.py` | CSV format handling | 14 | Unit | **New** |
+| `test_agent_unit.py` | Agent pure functions | 66 | Unit | **New** |
+| `test_review_workflow.py` | Review/approve/finalize | 17 | Integration | **New** |
+| `test_export_and_flagged.py` | QA export, flagged mgmt | 14 | Integration | **New** |
+| `test_upload_helpers.py` | Upload helper functions | 17 | Unit | **New** |
+| `test_parser_helpers.py` | Parser heuristic helpers | 31 | Unit | **New** |
+| `test_database.py` | Schema migration | 4 | Integration | **New** |
 
 ---
 
