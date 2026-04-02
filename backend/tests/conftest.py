@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from docx import Document as DocxDocument
 
 from app.database import Base, get_db
+import app.models  # noqa: F401 — ensure all models are registered with Base.metadata before create_all
 from app.main import app
 from app.config import settings
 
