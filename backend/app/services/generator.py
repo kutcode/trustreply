@@ -5,7 +5,7 @@ from pathlib import Path
 from copy import deepcopy
 
 from docx import Document as DocxDocument
-from docx.shared import Pt, RGBColor
+from docx.shared import RGBColor
 from docx.oxml.ns import qn
 
 from app.services.parser import ExtractedItem, RunFormat

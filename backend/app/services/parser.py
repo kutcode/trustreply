@@ -9,8 +9,8 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 
-from app.services.parsers.heuristic import DEFAULT_MIN_QUESTION_LENGTH, HeuristicParser, _is_question
-from app.services.parsers.types import ExtractedItem, ParseOptions, ParseResult, RunFormat
+from app.services.parsers.heuristic import DEFAULT_MIN_QUESTION_LENGTH, HeuristicParser
+from app.services.parsers.types import ExtractedItem, ParseOptions, ParseResult, RunFormat  # noqa: F401 (RunFormat re-exported)
 
 MIN_QUESTION_LENGTH = DEFAULT_MIN_QUESTION_LENGTH
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 import numpy as np
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import QAPair, DuplicateReview

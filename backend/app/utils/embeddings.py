@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 import numpy as np
-from functools import lru_cache
 from sentence_transformers import SentenceTransformer
 
 from app.config import settings

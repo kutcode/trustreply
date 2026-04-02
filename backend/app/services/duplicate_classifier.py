@@ -12,9 +12,7 @@ from app.models import QAPair
 from app.services.agent import (
     AgentRuntimeConfig,
     _call_chat_json,
-    _normalize_provider,
     default_agent_runtime_config,
-    PROVIDER_ANTHROPIC,
 )
 
 logger = logging.getLogger(__name__)

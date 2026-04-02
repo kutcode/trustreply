@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import re
 from pathlib import Path
 
@@ -331,7 +330,6 @@ class HeuristicParser(BaseParser):
                             continue
 
                         q_text = (row[q_col_idx] or "").strip()
-                        a_text = (row[a_col_idx] or "").strip()
 
                         if not q_text or len(q_text) < options.min_question_length:
                             continue
@@ -445,7 +443,6 @@ class HeuristicParser(BaseParser):
                 if not q_text or len(q_text) < options.min_question_length:
                     continue
 
-                a_text = a_cell.text.strip()
                 if _is_question(q_text, options.min_question_length):
                     answer_row_idx = r_idx
                     answer_col_idx = a_col_idx
@@ -581,7 +578,6 @@ class HeuristicParser(BaseParser):
                 continue
 
             q_text = (row[q_col_idx] or "").strip()
-            a_text = (row[a_col_idx] or "").strip()
 
             if not q_text or len(q_text) < options.min_question_length:
                 seen_non_empty_rows += 1

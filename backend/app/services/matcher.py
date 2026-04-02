@@ -10,7 +10,6 @@ from app.services.parser import ExtractedItem
 from app.utils.embeddings import (
     compute_embedding,
     compute_embeddings,
-    cosine_similarity,
     bytes_to_embedding,
     embedding_to_bytes,
 )
