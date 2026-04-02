@@ -47,7 +47,7 @@ _PROVIDER_ALIASES = {
 AGENT_API_MAX_RETRIES = 5
 AGENT_API_BASE_BACKOFF_SECONDS = 1.0
 AGENT_API_MAX_BACKOFF_SECONDS = 30.0
-AGENT_API_MAX_PARALLEL_CALLS = 1
+AGENT_API_MAX_PARALLEL_CALLS = 8
 _AGENT_API_CALL_SEMAPHORE = asyncio.Semaphore(AGENT_API_MAX_PARALLEL_CALLS)
 
 
@@ -129,7 +129,7 @@ def append_trace(
     """Append a structured trace event for frontend rendering."""
 
     event: dict[str, Any] = {
-        "timestamp": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat(),
         "step": step,
         "status": status,
         "message": message,
@@ -145,6 +145,11 @@ def _chunked(items: list[Any], size: int) -> list[list[Any]]:
     if size <= 0:
         size = 1
     return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token count estimate (~1 token per 4 chars for English text)."""
+    return max(1, len(text) // 4)
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
@@ -165,9 +170,14 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     start = cleaned.find("{")
     end = cleaned.rfind("}")
     if start >= 0 and end > start:
-        parsed = json.loads(cleaned[start:end + 1])
-        if isinstance(parsed, dict):
-            return parsed
+        try:
+            parsed = json.loads(cleaned[start:end + 1])
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Agent response contained braces but was not valid JSON: {exc}"
+            ) from exc
 
     raise ValueError("Agent response was not valid JSON object text")
 
@@ -344,13 +354,28 @@ async def _call_chat_json(
     runtime_config: AgentRuntimeConfig,
     *,
     temperature: float = 0.1,
+    token_usage: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Call an LLM provider and parse a JSON object response."""
 
+    # Estimate input tokens before call
+    input_text = json.dumps(messages)
+    input_est = _estimate_tokens(input_text)
+
     provider = _normalize_provider(runtime_config.provider)
     if provider == PROVIDER_ANTHROPIC:
-        return await _call_anthropic_json(messages, runtime_config, temperature=temperature)
-    return await _call_openai_compatible_json(messages, runtime_config, temperature=temperature)
+        result = await _call_anthropic_json(messages, runtime_config, temperature=temperature)
+    else:
+        result = await _call_openai_compatible_json(messages, runtime_config, temperature=temperature)
+
+    # Track token usage
+    if token_usage is not None:
+        output_est = _estimate_tokens(json.dumps(result))
+        token_usage["input_tokens"] += input_est
+        token_usage["output_tokens"] += output_est
+        token_usage["llm_calls"] += 1
+
+    return result
 
 
 async def _call_openai_compatible_json(
@@ -371,6 +396,8 @@ async def _call_openai_compatible_json(
         "messages": messages,
         "temperature": temperature,
     }
+    if settings.agent_structured_output:
+        payload["response_format"] = {"type": "json_object"}
 
     data = await _post_json_with_retries(
         endpoint=endpoint,
@@ -419,7 +446,7 @@ async def _call_anthropic_json(
 
     payload: dict[str, Any] = {
         "model": runtime_config.model,
-        "max_tokens": 2048,
+        "max_tokens": 4096,
         "temperature": temperature,
         "messages": converted_messages,
     }
@@ -483,7 +510,7 @@ def _extract_document_context(file_path: Path, items: list[ExtractedItem]) -> st
                         lines.append(" | ".join(compact))
         elif suffix == ".pdf":
             with pdfplumber.open(str(file_path)) as pdf:
-                for page in pdf.pages[:4]:
+                for page in pdf.pages[:8]:
                     page_text = page.extract_text() or ""
                     for line in page_text.splitlines():
                         cleaned = line.strip()
@@ -517,7 +544,7 @@ async def _build_candidate_map(
     if not questions:
         return {}
 
-    result = await db.execute(select(QAPair).where(QAPair.embedding.isnot(None)))
+    result = await db.execute(select(QAPair).where(QAPair.embedding.isnot(None)).where(QAPair.deleted_at.is_(None)))
     qa_pairs = result.scalars().all()
     if not qa_pairs:
         return {idx: [] for idx in range(len(questions))}
@@ -537,14 +564,18 @@ async def _build_candidate_map(
         ordered = top_indices[np.argsort(-similarities[top_indices])]
 
         candidates: list[dict[str, Any]] = []
+        cutoff = settings.agent_kb_similarity_cutoff
         for ranked_idx in ordered:
+            sim = float(similarities[int(ranked_idx)])
+            if sim < cutoff:
+                continue  # Skip low-similarity noise to save tokens
             qa = qa_pairs[int(ranked_idx)]
             candidates.append(
                 {
                     "category": qa.category,
                     "question": qa.question,
                     "answer": qa.answer,
-                    "similarity": round(float(similarities[int(ranked_idx)]), 4),
+                    "similarity": round(sim, 4),
                 }
             )
         candidate_map[idx] = candidates
@@ -560,6 +591,181 @@ def _coerce_confidence(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return max(0.0, min(1.0, confidence))
+
+
+async def _summarize_document_context(
+    raw_context: str,
+    runtime_config: AgentRuntimeConfig,
+    token_usage: dict[str, int] | None = None,
+) -> str:
+    """Use an LLM call to produce a structured document summary.
+
+    Extracts key entities (company name, dates, contacts, certifications,
+    document purpose) into a compact format that replaces raw truncation.
+    Falls back to the raw context if the summarization call fails.
+    """
+
+    # Short documents don't need summarization
+    if len(raw_context) <= settings.agent_max_context_chars:
+        return raw_context
+    # Very short documents: not worth the LLM call
+    if len(raw_context) < 800:
+        return raw_context
+
+    try:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a document summarizer. Extract key structured information from the document text below. "
+                    "Return a JSON object with these fields:\n"
+                    "- document_type: what kind of document this is (questionnaire, RFP, compliance form, etc.)\n"
+                    "- document_purpose: one-sentence summary of purpose\n"
+                    "- requesting_entity: who is sending/requesting this questionnaire (if identifiable)\n"
+                    "- target_entity: who should fill it in (if identifiable)\n"
+                    "- key_dates: any dates mentioned\n"
+                    "- contacts: any contact names/emails mentioned\n"
+                    "- certifications_mentioned: any compliance standards/certs referenced (SOC2, ISO, GDPR, etc.)\n"
+                    "- key_topics: list of 3-5 main topic areas covered\n"
+                    "- notable_context: any other critical context a questionnaire filler would need\n"
+                    "Be concise. Only include fields where you found information."
+                ),
+            },
+            {
+                "role": "user",
+                "content": raw_context[:12000],
+            },
+        ]
+        result = await _call_chat_json(messages, runtime_config, temperature=0.0, token_usage=token_usage)
+
+        # Build compact summary string from structured result
+        summary_parts: list[str] = ["=== DOCUMENT SUMMARY ==="]
+        for key, value in result.items():
+            if not value:
+                continue
+            label = key.replace("_", " ").title()
+            if isinstance(value, list):
+                summary_parts.append(f"{label}: {', '.join(str(v) for v in value)}")
+            else:
+                summary_parts.append(f"{label}: {value}")
+        summary_parts.append("=== END SUMMARY ===")
+
+        return "\n".join(summary_parts)
+    except Exception:
+        # Fall back to raw truncation
+        max_chars = max(settings.agent_max_context_chars, 500)
+        if len(raw_context) > max_chars:
+            return raw_context[:max_chars] + "\n...[truncated]"
+        return raw_context
+
+
+async def _run_verification_stage(
+    *,
+    items: list[ExtractedItem],
+    decisions: list[dict[str, Any]],
+    document_summary: str,
+    runtime_config: AgentRuntimeConfig,
+    trace: list[dict[str, Any]],
+    token_usage: dict[str, int] | None = None,
+) -> list[dict[str, Any]]:
+    """Verification stage: review low-confidence answers for consistency.
+
+    Checks for internal contradictions, miscalibrated confidence, and
+    answers that conflict with document context. Returns corrections.
+    """
+
+    if not settings.agent_verification_enabled:
+        append_trace(trace, "verify", "skipped", "Verification stage disabled in settings.")
+        return []
+
+    # Collect answers to verify: all low-confidence + sample of high-confidence
+    answers_to_verify: list[dict[str, Any]] = []
+    flagged_questions: list[dict[str, Any]] = []
+
+    for dec in decisions:
+        if dec.get("action") == "answer":
+            conf = dec.get("confidence") or 0.0
+            answers_to_verify.append({
+                "id": dec["id"],
+                "question": dec.get("question", ""),
+                "answer": dec.get("answer", ""),
+                "confidence": conf,
+                "reason": dec.get("reason", ""),
+            })
+        elif dec.get("action") == "flag":
+            flagged_questions.append({
+                "id": dec["id"],
+                "question": dec.get("question", ""),
+                "reason": dec.get("reason", ""),
+            })
+
+    if not answers_to_verify:
+        append_trace(trace, "verify", "skipped", "No answers to verify.")
+        return []
+
+    # Cap to max verification questions
+    max_q = settings.agent_verification_max_questions
+    if len(answers_to_verify) > max_q:
+        # Prioritize low-confidence answers
+        answers_to_verify.sort(key=lambda x: x.get("confidence", 0.0))
+        answers_to_verify = answers_to_verify[:max_q]
+
+    append_trace(
+        trace,
+        "verify",
+        "running",
+        f"Verifying {len(answers_to_verify)} answer(s) for consistency.",
+    )
+
+    try:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are VerifyAgent. Review the following answered questions for a questionnaire and check for:\n"
+                    "1. INTERNAL CONSISTENCY: Are entity names (company, contact, dates) used consistently across answers?\n"
+                    "2. DOCUMENT CONTRADICTIONS: Does any answer contradict information in the document summary?\n"
+                    "3. CONFIDENCE CALIBRATION: Are any confidence scores miscalibrated? (e.g., a generic/uncertain answer marked 0.95, or a well-supported answer marked low)\n"
+                    "4. FACTUAL CONCERNS: Any answers that appear fabricated or unsupported?\n\n"
+                    "For each issue found, return a correction. Only return corrections for real problems.\n"
+                    "Return strict JSON: {\"corrections\":[{\"id\":\"q_X\",\"action\":\"revise|flag|accept\","
+                    "\"revised_answer\":\"...\",\"revised_confidence\":0.X,\"reason\":\"...\"}],\"verification_summary\":\"...\"}"
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "document_summary": document_summary,
+                        "answers": answers_to_verify,
+                        "flagged_questions": flagged_questions[:10],
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+        result = await _call_chat_json(messages, runtime_config, temperature=0.0, token_usage=token_usage)
+        corrections = result.get("corrections", [])
+        if not isinstance(corrections, list):
+            corrections = []
+
+        verification_summary = str(result.get("verification_summary", "")).strip()
+        append_trace(
+            trace,
+            "verify",
+            "completed",
+            verification_summary or f"Verification found {len(corrections)} correction(s).",
+            {"corrections_count": len(corrections)},
+        )
+        return corrections
+    except Exception as exc:
+        append_trace(
+            trace,
+            "verify",
+            "error",
+            f"Verification stage failed: {exc}. Proceeding with unverified answers.",
+        )
+        return []
 
 
 async def run_contextual_fill_agent(
@@ -615,10 +821,32 @@ async def run_contextual_fill_agent(
         }
 
     original_answers = [item.answer_text for item in items]
-    work_items = [
-        {"index": idx, "question_text": item.question_text, "current_answer": item.answer_text}
-        for idx, item in enumerate(items)
-    ]
+
+    # ── Deduplication: group identical questions, process each unique question once ──
+    seen_questions: dict[str, int] = {}  # normalized_question -> first work_items index
+    duplicate_map: dict[int, int] = {}  # item_index -> canonical item_index
+    work_items: list[dict[str, Any]] = []
+
+    for idx, item in enumerate(items):
+        norm_q = (item.question_text or "").strip().lower()
+        if norm_q in seen_questions:
+            # This is a duplicate — will be filled from canonical answer later
+            duplicate_map[idx] = seen_questions[norm_q]
+        else:
+            seen_questions[norm_q] = idx
+            work_items.append({
+                "index": idx,
+                "question_text": item.question_text,
+                "current_answer": item.answer_text,
+            })
+
+    if duplicate_map:
+        append_trace(
+            trace,
+            "agent",
+            "running",
+            f"Deduplicated {len(duplicate_map)} repeated question(s) — will process {len(work_items)} unique question(s).",
+        )
 
     for work_idx, work_item in enumerate(work_items):
         work_item["work_idx"] = work_idx
@@ -652,7 +880,10 @@ async def run_contextual_fill_agent(
         },
     )
 
-    document_context = _extract_document_context(file_path, items)
+    token_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
+
+    raw_context = _extract_document_context(file_path, items)
+    document_context = await _summarize_document_context(raw_context, runtime, token_usage=token_usage)
     candidate_map = await _build_candidate_map(
         [work_item["question_text"] for work_item in work_items],
         db,
@@ -666,12 +897,84 @@ async def run_contextual_fill_agent(
         {"question_count": len(work_items)},
     )
 
-    max_per_call = max(settings.agent_max_questions_per_call, 1)
-    ordered_decisions: list[dict[str, Any]] = []
-    chunks = _chunked(work_items, max_per_call)
-    failed_chunks = 0
+    # ── Confidence-based KB routing: skip LLM for high-confidence KB matches ──
+    kb_direct_threshold = settings.agent_kb_direct_threshold
+    kb_routed_count = 0
+    llm_work_items: list[dict[str, Any]] = []
 
-    for chunk_idx, chunk in enumerate(chunks, start=1):
+    ordered_decisions: list[dict[str, Any]] = []
+    prior_answers: list[dict[str, str]] = []  # Accumulated high-confidence answers for cross-chunk context
+
+    for work_item in work_items:
+        local_idx = int(work_item["work_idx"])
+        candidates = candidate_map.get(local_idx, [])
+        top_sim = candidates[0]["similarity"] if candidates else 0.0
+
+        if candidates and top_sim >= kb_direct_threshold:
+            # High-confidence KB match — use directly, skip LLM
+            item_index = work_item["index"]
+            kb_answer = candidates[0]["answer"]
+            items[item_index].answer_text = kb_answer
+            items[item_index].matched_source = "kb_direct"
+            items[item_index].confidence = top_sim
+
+            decision_payload = {
+                "id": f"q_{item_index}",
+                "question": work_item["question_text"],
+                "action": "answer",
+                "answer": kb_answer,
+                "confidence": round(top_sim, 3),
+                "reason": f"Direct KB match (similarity {top_sim:.2f})",
+                "issues": [],
+            }
+            ordered_decisions.append(decision_payload)
+            prior_answers.append({
+                "question": work_item["question_text"],
+                "answer": kb_answer,
+            })
+            kb_routed_count += 1
+        else:
+            llm_work_items.append(work_item)
+
+    if kb_routed_count > 0:
+        append_trace(
+            trace,
+            "kb_routing",
+            "completed",
+            f"KB-routed {kb_routed_count} question(s) with similarity >= {kb_direct_threshold} (skipped LLM).",
+            {"kb_routed": kb_routed_count, "remaining_for_llm": len(llm_work_items)},
+        )
+
+    # ── Early exit: all questions resolved by KB, skip LLM entirely ──
+    if not llm_work_items:
+        append_trace(
+            trace, "fill", "completed",
+            f"All {kb_routed_count} question(s) resolved via KB direct match — LLM skipped entirely.",
+        )
+        return {
+            "items": items,
+            "decisions": ordered_decisions,
+            "trace": trace,
+            "status": "completed",
+            "summary": f"All {kb_routed_count} question(s) answered from knowledge base (no LLM needed).",
+            "stats": {
+                "input_tokens": token_usage["input_tokens"],
+                "output_tokens": token_usage["output_tokens"],
+                "llm_calls": token_usage["llm_calls"],
+                "kb_routed": kb_routed_count,
+            },
+        }
+
+    chunks = _chunked(llm_work_items, settings.agent_max_questions_per_call)
+    failed_chunks = 0
+    use_single_stage = settings.agent_single_stage
+
+    async def _process_chunk(chunk_idx: int, chunk: list[dict[str, Any]], prior_answers_snapshot: list[dict[str, str]]) -> list[dict[str, Any]]:
+        """Process a single LLM chunk — designed to run concurrently.
+
+        Uses a snapshot of prior_answers taken before concurrent execution to
+        avoid reading shared mutable state from other chunks.
+        """
         payload_questions = []
         for work_item in chunk:
             global_idx = work_item["index"]
@@ -685,15 +988,55 @@ async def run_contextual_fill_agent(
                 }
             )
 
-        try:
-            append_trace(
-                trace,
-                "research",
-                "running",
-                f"Running research agent on chunk {chunk_idx}/{len(chunks)}.",
-                {"chunk_size": len(payload_questions)},
-            )
+        if use_single_stage:
+            # ── SINGLE-STAGE MODE: one call does research + fill (saves ~50% tokens) ──
+            # Build compact prior_answers summary (just Q+A, no bloat)
+            prior_context = ""
+            if prior_answers_snapshot:
+                pa_lines = [f"- {pa['question']}: {pa['answer']}" for pa in prior_answers_snapshot[-settings.agent_max_prior_answers:]]
+                prior_context = "\n\nPRIOR ANSWERS (use for consistency):\n" + "\n".join(pa_lines)
 
+            combined_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an AI questionnaire filling agent. Analyze each question, research it using "
+                        "the knowledge base candidates and document context, then decide whether to answer or flag it.\n\n"
+                        "RULES:\n"
+                        "1. ACTION='answer' when confidence >= 0.7 AND answer is supported by KB candidates or document context.\n"
+                        "2. ACTION='flag' when: confidence < 0.7, question asks for context-specific info (names, dates, "
+                        "contacts, project references), KB has no match, or any ambiguity exists.\n"
+                        "3. Context-specific fields (Company Name, Contact, Date, Address) → ALWAYS flag unless prior answers "
+                        "or document headers make the answer unambiguous.\n"
+                        "4. Never fabricate. A wrong answer is worse than a flag.\n"
+                        "5. CONFIDENCE: 0.9-1.0 = near-certain (direct KB/doc match), 0.7-0.85 = good inference, "
+                        "<0.7 = uncertain (flag it).\n"
+                        "6. For yes/no compliance questions with strong KB match → answer confidently.\n"
+                        "7. For contact_info/date questions → almost always flag.\n"
+                        "8. Include 'reason' explaining your decision. Include 'issues' array for any concerns.\n\n"
+                        "Return strict JSON:\n"
+                        "{\"decisions\":[{\"id\":\"q_X\",\"action\":\"answer|flag\",\"answer\":\"...\","
+                        "\"confidence\":0.0,\"reason\":\"...\",\"issues\":[]}],\"summary\":\"...\"}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "document_context": document_context,
+                            "instructions": instructions or "",
+                            "questions": payload_questions,
+                        },
+                        ensure_ascii=False,
+                    ) + prior_context,
+                },
+            ]
+            fill_result = await _call_chat_json(combined_messages, runtime, temperature=0.0, token_usage=token_usage)
+            chunk_decisions = fill_result.get("decisions", [])
+            if not isinstance(chunk_decisions, list):
+                chunk_decisions = []
+        else:
+            # ── TWO-STAGE MODE: separate research + fill calls (original behavior) ──
             research_messages = [
                 {
                     "role": "system",
@@ -712,9 +1055,17 @@ async def run_contextual_fill_agent(
                         "for human review unless the answer is clearly derivable from the document context itself.\n"
                         "5. Do NOT invent facts. Do NOT guess contact details, dates, or entity-specific information.\n"
                         "6. When unsure, set needs_human_review=true and confidence below 0.5.\n\n"
+                        "QUESTION TYPE CLASSIFICATION — for each question, classify its type:\n"
+                        "- factual_about_company: questions about your company's policies, practices, capabilities\n"
+                        "- context_specific: names, dates, contacts, project references that vary per questionnaire\n"
+                        "- yes_no_compliance: binary compliance questions (Do you...? Are you...?)\n"
+                        "- open_ended: narrative/descriptive questions needing detailed explanation\n"
+                        "- contact_info: requesting specific contact details, addresses, phone numbers\n"
+                        "- date_field: requesting specific dates or timelines\n\n"
                         "Return strict JSON: "
-                        "{\"notes\":[{\"id\":\"...\",\"research_summary\":\"...\",\"proposed_answer\":\"...\","
-                        "\"confidence\":0.0,\"needs_human_review\":false,\"issues\":[\"...\"]}]}"
+                        "{\"notes\":[{\"id\":\"...\",\"question_type\":\"...\",\"research_summary\":\"...\","
+                        "\"proposed_answer\":\"...\",\"confidence\":0.0,\"needs_human_review\":false,"
+                        "\"issues\":[\"...\"]}]}"
                     ),
                 },
                 {
@@ -730,18 +1081,10 @@ async def run_contextual_fill_agent(
                     ),
                 },
             ]
-            research_result = await _call_chat_json(research_messages, runtime, temperature=0.0)
+            research_result = await _call_chat_json(research_messages, runtime, temperature=0.0, token_usage=token_usage)
             research_notes = research_result.get("notes", [])
             if not isinstance(research_notes, list):
                 research_notes = []
-
-            append_trace(
-                trace,
-                "fill",
-                "running",
-                f"Running fill agent on chunk {chunk_idx}/{len(chunks)}.",
-                {"research_notes": len(research_notes)},
-            )
 
             fill_messages = [
                 {
@@ -761,6 +1104,21 @@ async def run_contextual_fill_agent(
                         "the human reviewer can fill it quickly.\n"
                         "5. Prefer KB-backed answers for general policy/compliance/security questions.\n"
                         "6. Never fabricate information. A wrong answer is worse than a flag.\n\n"
+                        "CONFIDENCE CALIBRATION:\n"
+                        "- 0.9-1.0: Answer is directly backed by a KB entry with high similarity OR explicitly "
+                        "stated in the document. Reserve this for near-certain answers only.\n"
+                        "- 0.7-0.85: Answer is inferred from KB candidates or document context with reasonable "
+                        "confidence. Good KB match but not exact.\n"
+                        "- 0.5-0.7: Partial match, some uncertainty. Should be flagged.\n"
+                        "- Below 0.5: Significant uncertainty or no supporting evidence.\n\n"
+                        "CROSS-QUESTION CONSISTENCY:\n"
+                        "- If prior_answers are provided, use them for consistency. If Q1 identified a company "
+                        "name, reuse it where applicable. Do not contradict prior answers.\n\n"
+                        "QUESTION TYPE AWARENESS:\n"
+                        "- Use the question_type from research notes to inform your decision.\n"
+                        "- 'contact_info' and 'date_field' types should almost always be flagged.\n"
+                        "- 'yes_no_compliance' with strong KB match can be answered confidently.\n"
+                        "- 'factual_about_company' with KB match can be answered confidently.\n\n"
                         "Return strict JSON: "
                         "{\"decisions\":[{\"id\":\"...\",\"action\":\"answer|flag\",\"answer\":\"...\","
                         "\"confidence\":0.0,\"reason\":\"...\",\"issues\":[\"...\"]}],\"summary\":\"...\"}"
@@ -774,24 +1132,54 @@ async def run_contextual_fill_agent(
                             "instructions": instructions or "",
                             "questions": payload_questions,
                             "research_notes": research_notes,
+                            "prior_answers": prior_answers_snapshot[-settings.agent_max_prior_answers:],
                         },
                         ensure_ascii=False,
                     ),
                 },
             ]
-            fill_result = await _call_chat_json(fill_messages, runtime, temperature=0.0)
+            fill_result = await _call_chat_json(fill_messages, runtime, temperature=0.0, token_usage=token_usage)
             chunk_decisions = fill_result.get("decisions", [])
             if not isinstance(chunk_decisions, list):
                 chunk_decisions = []
+
+        return chunk_decisions
+
+    # ── Run all chunks concurrently for maximum speed ──
+    append_trace(
+        trace,
+        "fill",
+        "running",
+        f"Processing {len(chunks)} chunk(s) concurrently ({len(llm_work_items)} questions total).",
+        {"chunks": len(chunks), "questions": len(llm_work_items)},
+    )
+
+    # Snapshot prior_answers before concurrent execution so each chunk sees
+    # KB-routed answers but not other chunks' answers (avoids race condition).
+    prior_answers_snapshot = list(prior_answers)
+
+    async def _safe_process_chunk(chunk_idx: int, chunk: list[dict[str, Any]]) -> tuple[int, list[dict[str, Any]]]:
+        """Wrapper that catches exceptions per-chunk so one failure doesn't kill the batch."""
+        try:
+            decisions = await _process_chunk(chunk_idx, chunk, prior_answers_snapshot)
+            return chunk_idx, decisions
         except Exception as chunk_exc:
-            failed_chunks += 1
             append_trace(
                 trace,
                 "fill",
                 "error",
-                f"Chunk {chunk_idx}/{len(chunks)} failed; leaving {len(payload_questions)} question(s) flagged.",
+                f"Chunk {chunk_idx}/{len(chunks)} failed; leaving question(s) flagged.",
                 {"error": str(chunk_exc)},
             )
+            return chunk_idx, []
+
+    chunk_results = await asyncio.gather(
+        *[_safe_process_chunk(idx, chunk) for idx, chunk in enumerate(chunks, start=1)]
+    )
+
+    for chunk_idx, chunk_decisions in chunk_results:
+        if not chunk_decisions:
+            failed_chunks += 1
             continue
 
         for decision in chunk_decisions:
@@ -827,6 +1215,10 @@ async def run_contextual_fill_agent(
 
             if action == "answer":
                 items[item_index].answer_text = answer
+                prior_answers.append({
+                    "question": items[item_index].question_text,
+                    "answer": answer,
+                })
             elif mode == AGENT_MODE_AGENT or not items[item_index].answer_text:
                 items[item_index].answer_text = None
 
@@ -837,6 +1229,74 @@ async def run_contextual_fill_agent(
             f"Completed chunk {chunk_idx}/{len(chunks)}.",
             {"decisions": len(chunk_decisions)},
         )
+
+    # ── Verification stage (conditional) ──
+    if ordered_decisions and settings.agent_verification_enabled:
+        # Smart skip: if average confidence is very high, skip verification to save tokens
+        answered_confs = [
+            d.get("confidence", 0.0) for d in ordered_decisions
+            if d.get("action") == "answer" and d.get("confidence") is not None
+        ]
+        avg_conf = sum(answered_confs) / len(answered_confs) if answered_confs else 0.0
+
+        if avg_conf >= settings.agent_skip_verify_threshold and len(answered_confs) > 3:
+            append_trace(
+                trace,
+                "verify",
+                "skipped",
+                f"Skipped verification — average confidence {avg_conf:.2f} exceeds threshold "
+                f"{settings.agent_skip_verify_threshold}.",
+            )
+        else:
+            corrections = await _run_verification_stage(
+                items=items,
+                decisions=ordered_decisions,
+                document_summary=document_context,
+                runtime_config=runtime,
+                trace=trace,
+                token_usage=token_usage,
+            )
+            # Apply corrections
+            for correction in corrections:
+                if not isinstance(correction, dict):
+                    continue
+                cid = str(correction.get("id", ""))
+                if not cid.startswith("q_"):
+                    continue
+                try:
+                    cidx = int(cid.split("_", maxsplit=1)[1])
+                except (TypeError, ValueError):
+                    continue
+                if cidx < 0 or cidx >= len(items):
+                    continue
+
+                c_action = str(correction.get("action", "")).strip().lower()
+                if c_action == "revise":
+                    revised = (correction.get("revised_answer") or "").strip()
+                    if revised:
+                        items[cidx].answer_text = revised
+                        # Update the decision record too
+                        for dec in ordered_decisions:
+                            if dec.get("id") == cid:
+                                dec["answer"] = revised
+                                if correction.get("revised_confidence") is not None:
+                                    dec["confidence"] = _coerce_confidence(correction["revised_confidence"])
+                                dec["reason"] = (dec.get("reason", "") + " [Revised by verification: " +
+                                                 str(correction.get("reason", "")) + "]").strip()
+                                break
+                elif c_action == "flag":
+                    items[cidx].answer_text = None
+                    for dec in ordered_decisions:
+                        if dec.get("id") == cid:
+                            dec["action"] = "flag"
+                            dec["answer"] = None
+                            dec["reason"] = (dec.get("reason", "") + " [Flagged by verification: " +
+                                             str(correction.get("reason", "")) + "]").strip()
+                            break
+
+    # ── Propagate answers to duplicate questions (zero extra LLM cost) ──
+    for dup_idx, canonical_idx in duplicate_map.items():
+        items[dup_idx].answer_text = items[canonical_idx].answer_text
 
     answers_generated = 0
     overrides = 0
@@ -882,6 +1342,10 @@ async def run_contextual_fill_agent(
             "flags_recommended": flags_recommended,
             "overrides": overrides,
             "failed_chunks": failed_chunks,
+            "kb_routed": kb_routed_count,
+            "input_tokens": token_usage["input_tokens"],
+            "output_tokens": token_usage["output_tokens"],
+            "llm_calls": token_usage["llm_calls"],
         },
         "decisions": ordered_decisions[:100],
     }

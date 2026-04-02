@@ -34,7 +34,7 @@ async def match_questions(
         threshold = settings.similarity_threshold
 
     # Load all Q&A pairs from DB
-    result = await db.execute(select(QAPair).where(QAPair.embedding.isnot(None)))
+    result = await db.execute(select(QAPair).where(QAPair.embedding.isnot(None)).where(QAPair.deleted_at.is_(None)))
     qa_pairs = result.scalars().all()
 
     resolved_result = await db.execute(

@@ -73,8 +73,16 @@ def get_parser_profiles() -> list[dict[str, str]]:
     return profiles
 
 
-def get_parse_options(profile_name: str | None = None) -> ParseOptions:
-    """Resolve parser profile settings to concrete parse options."""
+def get_parse_options(
+    profile_name: str | None = None,
+    hint_overrides: dict | None = None,
+) -> ParseOptions:
+    """Resolve parser profile settings to concrete parse options.
+
+    If *hint_overrides* is provided (typically from AI troubleshooting), recognised
+    keys are merged on top of the profile defaults so the agent's recommendations
+    take effect automatically.
+    """
 
     profile_name = profile_name or "default"
     profile = PARSER_PROFILES.get(profile_name)
@@ -83,6 +91,24 @@ def get_parse_options(profile_name: str | None = None) -> ParseOptions:
 
     options = deepcopy(profile["options"])
     options.profile_name = profile_name
+
+    if hint_overrides:
+        _ALLOWED_INT = {"question_column_index", "answer_column_index", "header_rows"}
+        _ALLOWED_BOOL = {"detect_row_blocks"}
+        for key in _ALLOWED_INT:
+            value = hint_overrides.get(key)
+            if value is not None and not isinstance(value, bool):
+                try:
+                    parsed = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if parsed >= 0:
+                    setattr(options, key, parsed)
+        for key in _ALLOWED_BOOL:
+            value = hint_overrides.get(key)
+            if isinstance(value, bool):
+                setattr(options, key, value)
+
     return options
 
 
