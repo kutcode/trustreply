@@ -35,6 +35,9 @@ frontend/.env.*.local
 # Generated test data (keep the generator script, not the output)
 test-data/sample-questionnaires/
 test-data/stress-test*/
+test_questionnaire.csv
+test_questionnaires/
+test_security_questionnaire.docx
 
 # OS
 .DS_Store
