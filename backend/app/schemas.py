@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ── Q&A Pair ──────────────────────────────────────────────────────────
@@ -61,6 +61,10 @@ class JobResponse(BaseModel):
     agent_trace: list[dict] | None
     agent_error: str | None
     agent_model: str | None
+    agent_input_tokens: int | None = None
+    agent_output_tokens: int | None = None
+    agent_llm_calls: int | None = None
+    agent_kb_routed: int | None = None
     review_status: str | None = None
     uploaded_at: datetime.datetime
     completed_at: datetime.datetime | None
@@ -142,6 +146,8 @@ class QuestionResultResponse(BaseModel):
     location_info: dict | None
     item_type: str | None
     reviewed: bool
+    agent_reason: str | None = None
+    agent_issues: list[str] | None = None
     created_at: datetime.datetime
 
     class Config:
@@ -164,6 +170,7 @@ class FinalizeJobResponse(BaseModel):
     review_status: str
     output_filename: str
     total_edited: int
+    corrections_captured: int = 0
 
 
 # ── Settings ─────────────────────────────────────────────────────────
@@ -194,6 +201,11 @@ class AppSettingsUpdate(BaseModel):
     agent_max_questions_per_call: int | None = Field(None, ge=1, le=100)
     similarity_threshold: float | None = Field(None, ge=0.0, le=1.0)
     default_parser_profile: str | None = None
+    parser_hint_overrides: dict | None = None
+    agent_openai_api_key: str | None = None
+    agent_openai_model: str | None = None
+    agent_anthropic_api_key: str | None = None
+    agent_anthropic_model: str | None = None
 
 
 class AgentModelsRequest(BaseModel):
@@ -241,3 +253,160 @@ class TroubleshootResponse(BaseModel):
     hints: list[str]
     profiles: list[TroubleshootProfileResult]
     agent_analysis: dict | None = None
+
+
+# ── Audit Trail ────────────────────────────────────────────────────
+
+class AuditLogResponse(BaseModel):
+    id: int
+    timestamp: datetime.datetime
+    action_type: str
+    entity_type: str
+    entity_id: int | None
+    job_id: int | None
+    actor: str
+    details: dict | None
+    before_value: str | None
+    after_value: str | None
+
+    class Config:
+        from_attributes = True
+
+
+class AuditLogListResponse(BaseModel):
+    items: list[AuditLogResponse]
+    total: int
+
+
+# ── Agent Presets ─────────────────────────────────────────────────
+
+class AgentPresetCreate(BaseModel):
+    name: str
+    instructions: str
+
+
+class AgentPresetResponse(BaseModel):
+    id: int
+    name: str
+    instructions: str
+    is_builtin: bool
+    created_at: datetime.datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AgentPresetListResponse(BaseModel):
+    items: list[AgentPresetResponse]
+    total: int
+
+
+# ── Template Answers ──────────────────────────────────────────────
+
+class TemplateAnswerUpdate(BaseModel):
+    answer_text: str
+
+
+# ── KB Deduplication ──────────────────────────────────────────────
+
+class DuplicateCluster(BaseModel):
+    """A group of KB entries that are semantically near-duplicate."""
+    canonical_id: int  # The entry we recommend keeping (highest ID = most recently updated)
+    entries: list[QAPairResponse]
+    similarity: float  # Average pairwise similarity within the cluster
+
+
+class DuplicateDetectionResponse(BaseModel):
+    clusters: list[DuplicateCluster]
+    total_duplicates: int  # Total entries that are part of a cluster
+    total_entries_scanned: int
+
+
+class MergeRequest(BaseModel):
+    keep_id: int  # The entry to keep
+    delete_ids: list[int] = Field(..., min_length=1)  # Entries to soft-delete
+
+
+class MergeResponse(BaseModel):
+    kept_id: int
+    deleted_count: int
+
+
+class BulkMergeRequest(BaseModel):
+    """Merge multiple clusters at once. Each item specifies which entry to keep and which to delete."""
+    merges: list[MergeRequest] = Field(..., min_length=1, max_length=100)
+
+
+class BulkMergeResponse(BaseModel):
+    merged_clusters: int
+    total_deleted: int
+
+
+# ── KB Duplicate Review (LLM-classified) ─────────────────────────
+
+class DuplicateClassifyRequest(BaseModel):
+    threshold: float = Field(0.85, ge=0.0, le=1.0)
+    category: str | None = None
+
+
+class ClassifiedPair(BaseModel):
+    review_id: int
+    entry_a: QAPairResponse
+    entry_b: QAPairResponse
+    similarity: float
+    classification: str
+    reason: str
+    recommended_keep_id: int | None
+
+
+class DuplicateClassifyResponse(BaseModel):
+    pairs: list[ClassifiedPair]
+    total_classified: int
+    llm_model: str
+
+
+class DuplicateReviewItem(BaseModel):
+    id: int
+    entry_a: QAPairResponse
+    entry_b: QAPairResponse
+    similarity_score: float
+    classification: str | None = None
+    reason: str | None = None
+    recommended_keep_id: int | None = None
+    status: str
+    source: str
+    created_at: datetime.datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DuplicateReviewListResponse(BaseModel):
+    items: list[DuplicateReviewItem]
+    total: int
+    pending_count: int
+    reviewed_count: int
+
+
+class DuplicateReviewAction(BaseModel):
+    action: str = Field(..., pattern="^(keep_left|keep_right|keep_both|merge)$")
+
+
+class DuplicateReviewActionResponse(BaseModel):
+    id: int
+    status: str
+    action: str
+    kept_id: int | None = None
+    deleted_id: int | None = None
+
+
+class BulkDuplicateReviewAction(BaseModel):
+    review_id: int
+    action: str = Field(..., pattern="^(keep_left|keep_right|keep_both|merge)$")
+
+
+class BulkDuplicateReviewRequest(BaseModel):
+    actions: list[BulkDuplicateReviewAction] = Field(..., min_length=1, max_length=200)
+
+
+class BulkDuplicateReviewResponse(BaseModel):
+    processed: int
+    errors: list[str] = Field(default_factory=list)

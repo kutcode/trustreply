@@ -16,10 +16,25 @@ backend/outputs/
 
 # Environment
 .env
-.env.local
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+frontend/.env.local
+frontend/.env.*.local
+
+# Log files
+*.log
+.next-dev-*.log
+.backend-*.log
 
 # Local tooling
 .claude/
+
+# Generated test data (keep the generator script, not the output)
+test-data/sample-questionnaires/
+test-data/stress-test*/
 
 # OS
 .DS_Store
