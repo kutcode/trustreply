@@ -100,7 +100,7 @@ cd backend
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --reload-dir app --host 127.0.0.1 --port 8001
 ```
 
 ### Frontend
@@ -112,6 +112,8 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
+
+Note: the frontend `.env.local` is configured for `http://127.0.0.1:8001`, so run backend on port `8001` for local development.
 
 ## Docker
 

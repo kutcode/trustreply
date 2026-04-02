@@ -1,38 +1,73 @@
-version: '3.8'
-
 services:
   backend:
     build: ./backend
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     environment:
-      - QF_DATABASE_URL=sqlite+aiosqlite:///./questionnaire_filler.db
-      - QF_SIMILARITY_THRESHOLD=0.75
-      - QF_CORS_ORIGINS=["http://localhost:3000"]
+      # Database — Supabase Postgres for team, SQLite for local
+      - QF_DATABASE_URL=${QF_DATABASE_URL:-sqlite+aiosqlite:///./questionnaire_filler.db}
+      # Supabase
+      - QF_SUPABASE_URL=${QF_SUPABASE_URL:-}
+      - QF_SUPABASE_ANON_KEY=${QF_SUPABASE_ANON_KEY:-}
+      - QF_SUPABASE_SERVICE_KEY=${QF_SUPABASE_SERVICE_KEY:-}
+      - QF_SUPABASE_JWT_SECRET=${QF_SUPABASE_JWT_SECRET:-}
+      # Matching
+      - QF_SIMILARITY_THRESHOLD=${QF_SIMILARITY_THRESHOLD:-0.75}
+      # CORS — allow the frontend container
+      - QF_CORS_ORIGINS=["http://localhost:${FRONTEND_PORT:-3000}","http://localhost:3000","http://localhost:3001","http://localhost:3002"]
+      # Agent / LLM
       - QF_AGENT_ENABLED=${QF_AGENT_ENABLED:-false}
       - QF_AGENT_PROVIDER=${QF_AGENT_PROVIDER:-openai}
       - QF_AGENT_API_BASE=${QF_AGENT_API_BASE:-https://api.openai.com/v1}
-      - QF_AGENT_API_KEY=${OPENAI_API_KEY:-}
+      - QF_AGENT_API_KEY=${QF_AGENT_API_KEY:-}
       - QF_AGENT_MODEL=${QF_AGENT_MODEL:-gpt-4.1-nano}
       - QF_AGENT_DEFAULT_MODE=${QF_AGENT_DEFAULT_MODE:-agent}
+      # Multi-provider keys
+      - QF_AGENT_OPENAI_API_KEY=${QF_AGENT_OPENAI_API_KEY:-}
+      - QF_AGENT_OPENAI_MODEL=${QF_AGENT_OPENAI_MODEL:-gpt-4.1-nano}
+      - QF_AGENT_ANTHROPIC_API_KEY=${QF_AGENT_ANTHROPIC_API_KEY:-}
+      - QF_AGENT_ANTHROPIC_MODEL=${QF_AGENT_ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      # Access control (JSON list, e.g. '["example.com"]')
+      - QF_ALLOWED_EMAIL_DOMAINS=${QF_ALLOWED_EMAIL_DOMAINS:-[]}
+      # API key auth (optional, separate from Supabase auth)
+      - QF_API_KEY=${QF_API_KEY:-}
     volumes:
       - backend-uploads:/app/uploads
       - backend-outputs:/app/outputs
-      - backend-db:/app
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 2G
 
   frontend:
     build:
       context: ./frontend
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:8000
+        NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_PORT:-8000}
+        NEXT_PUBLIC_SUPABASE_URL: ${QF_SUPABASE_URL:-}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${QF_SUPABASE_ANON_KEY:-}
     ports:
-      - "3000:3000"
+      - "${FRONTEND_PORT:-3000}:3000"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 2G
 
 volumes:
   backend-uploads:
   backend-outputs:
-  backend-db:
