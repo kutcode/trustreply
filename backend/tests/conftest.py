@@ -8,6 +8,10 @@ from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from docx import Document as DocxDocument
 
+import app.database as _db_module
+import app.routers.upload as _upload_module
+import app.routers.qa as _qa_module
+import app.routers.flagged as _flagged_module
 from app.database import Base, get_db
 import app.models  # noqa: F401 — ensure all models are registered with Base.metadata before create_all
 from app.main import app
@@ -64,16 +68,44 @@ async def db_session(db_engine):
 
 
 @pytest_asyncio.fixture
-async def client(db_session):
-    """HTTP test client with overridden DB dependency."""
+async def client(db_engine, db_session):
+    """HTTP test client with overridden DB dependency.
+
+    Patches both the FastAPI dependency *and* the module-level engine/session
+    so that background tasks (which use ``async_session()`` directly) also
+    hit the test database.
+    """
     async def override_get_db():
         yield db_session
+
+    # Patch module-level engine + session factory so background tasks use the test DB
+    test_session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    originals = {
+        "db_engine": _db_module.engine,
+        "db_session": _db_module.async_session,
+        "upload_session": _upload_module.async_session,
+        "qa_session": _qa_module.async_session,
+        "flagged_session": _flagged_module.async_session,
+    }
+    _db_module.engine = db_engine
+    _db_module.async_session = test_session_factory
+    _upload_module.async_session = test_session_factory
+    _qa_module.async_session = test_session_factory
+    _flagged_module.async_session = test_session_factory
 
     app.dependency_overrides[get_db] = override_get_db
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
     app.dependency_overrides.clear()
+
+    # Restore originals
+    _db_module.engine = originals["db_engine"]
+    _db_module.async_session = originals["db_session"]
+    _upload_module.async_session = originals["upload_session"]
+    _qa_module.async_session = originals["qa_session"]
+    _flagged_module.async_session = originals["flagged_session"]
 
 
 @pytest.fixture
