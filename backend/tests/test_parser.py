@@ -10,8 +10,8 @@ from app.services.parser import (
     parse_docx,
     parse_document,
     parse_document_result,
-    _is_question,
 )
+from app.services.parsers.heuristic import _is_question
 
 
 class TestIsQuestion:
