@@ -3,8 +3,8 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 
-export default function FlaggedRedirect() {
+export default function ActivityRedirect() {
     const router = useRouter();
-    useEffect(() => { router.replace('/admin?tab=flagged'); }, [router]);
+    useEffect(() => { router.replace('/settings?tab=activity'); }, [router]);
     return null;
 }

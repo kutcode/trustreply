@@ -1,26 +1,32 @@
+import { isAuthEnabled, createClient, getAccessToken } from '@/lib/supabase';
+
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 const DEFAULT_API_PORTS = ['8000', '8001', '8002'];
 
 let resolvedApiBase = CONFIGURED_API_BASE || '';
 let resolveApiBasePromise = null;
+let lastResolveFailure = 0;
+const RESOLVE_RETRY_DELAY_MS = 5000;
 
 function normalizeBase(base) {
     return base.replace(/\/+$/, '');
 }
 
 function getDiscoveryBases() {
-    if (CONFIGURED_API_BASE) {
-        return [normalizeBase(CONFIGURED_API_BASE)];
-    }
+    const configured = CONFIGURED_API_BASE ? [normalizeBase(CONFIGURED_API_BASE)] : [];
 
     if (typeof window === 'undefined') {
-        return ['http://localhost:8000'];
+        const localFallbacks = DEFAULT_API_PORTS.map((port) => `http://localhost:${port}`);
+        return [...new Set([...configured, ...localFallbacks])];
     }
 
     const protocol = window.location.protocol || 'http:';
     const hostname = window.location.hostname || 'localhost';
+    const localFallbacks = DEFAULT_API_PORTS.map((port) => `${protocol}//${hostname}:${port}`);
 
-    return DEFAULT_API_PORTS.map((port) => `${protocol}//${hostname}:${port}`);
+    // Keep configured API first, but still probe local fallback ports to recover
+    // from local port drift (e.g. backend restarted on a different port).
+    return [...new Set([...configured, ...localFallbacks].map(normalizeBase))];
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 1200) {
@@ -51,6 +57,10 @@ async function probeApiBase(base) {
 async function resolveApiBase() {
     if (resolvedApiBase) return resolvedApiBase;
 
+    if (Date.now() - lastResolveFailure < RESOLVE_RETRY_DELAY_MS) {
+        throw new Error('API discovery recently failed. Retrying shortly.');
+    }
+
     if (!resolveApiBasePromise) {
         resolveApiBasePromise = (async () => {
             const candidates = [...new Set(getDiscoveryBases().map(normalizeBase))];
@@ -58,6 +68,7 @@ async function resolveApiBase() {
             const match = results.find(Boolean);
 
             if (!match) {
+                lastResolveFailure = Date.now();
                 throw new Error(`No healthy API backend found. Checked: ${candidates.join(', ')}`);
             }
 
@@ -71,18 +82,80 @@ async function resolveApiBase() {
     return resolveApiBasePromise;
 }
 
-async function apiFetch(path, options = {}, retry = true) {
+async function _getAuthToken() {
+    if (!isAuthEnabled) return null;
+
+    // Fast path: use cached token from AuthProvider
+    const cached = getAccessToken();
+    if (cached) return cached;
+
+    // Slow path: ask Supabase client (triggers refresh if needed)
+    try {
+        const supabase = createClient();
+        if (supabase) {
+            const { data } = await supabase.auth.getSession();
+            return data?.session?.access_token || null;
+        }
+    } catch (e) {
+        console.warn('Failed to get auth token:', e);
+    }
+    return null;
+}
+
+async function _refreshAuthToken() {
+    if (!isAuthEnabled) return null;
+    try {
+        const supabase = createClient();
+        if (supabase) {
+            const { data, error } = await supabase.auth.refreshSession();
+            if (!error && data?.session?.access_token) {
+                return data.session.access_token;
+            }
+        }
+    } catch (e) {
+        console.warn('Failed to refresh auth token:', e);
+    }
+    return null;
+}
+
+async function apiFetch(path, options = {}) {
     const base = await resolveApiBase();
 
+    // Inject auth token
+    const token = await _getAuthToken();
+    if (token) {
+        options.headers = {
+            ...options.headers,
+            'Authorization': `Bearer ${token}`,
+        };
+    }
+
+    let res;
     try {
-        return await fetch(`${base}${path}`, options);
+        res = await fetch(`${base}${path}`, options);
     } catch (err) {
-        if (retry && !CONFIGURED_API_BASE) {
-            resolvedApiBase = '';
-            return apiFetch(path, options, false);
-        }
+        // Network error — clear cached base so next call re-resolves
+        resolvedApiBase = '';
         throw err;
     }
+
+    // On 401, try refreshing the token once before giving up
+    if (res.status === 401 && isAuthEnabled) {
+        const freshToken = await _refreshAuthToken();
+        if (freshToken) {
+            options.headers = {
+                ...options.headers,
+                'Authorization': `Bearer ${freshToken}`,
+            };
+            try {
+                return await fetch(`${base}${path}`, options);
+            } catch (err) {
+                throw err;
+            }
+        }
+    }
+
+    return res;
 }
 
 export function getApiBaseHint() {
@@ -101,6 +174,7 @@ export async function uploadDocument(
         agentMode = null,
         agentInstructions = '',
         agentConfig = null,
+        templateId = null,
     } = {},
 ) {
     const formData = new FormData();
@@ -127,6 +201,9 @@ export async function uploadDocument(
         if (agentConfig.model) {
             formData.append('agent_model', agentConfig.model);
         }
+    }
+    if (templateId) {
+        formData.append('template_id', templateId);
     }
     const res = await apiFetch('/api/upload', {
         method: 'POST',
@@ -206,6 +283,48 @@ export async function getBatchJobs(batchId) {
 export function getBatchDownloadUrl(batchId) {
     const base = resolvedApiBase || normalizeBase(CONFIGURED_API_BASE || getDiscoveryBases()[0]);
     return `${base}/api/jobs/batch/${batchId}/download`;
+}
+
+/**
+ * Download a file with auth token injected (for Supabase auth).
+ * Falls back to direct URL navigation when auth is disabled.
+ */
+export async function downloadWithAuth(url, fallbackFilename = 'download') {
+    if (!isAuthEnabled) {
+        window.open(url, '_blank');
+        return;
+    }
+    let token = await _getAuthToken();
+    let res = await fetch(url, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+    });
+    // On 401, try refreshing the token once
+    if (res.status === 401) {
+        const freshToken = await _refreshAuthToken();
+        if (freshToken) {
+            token = freshToken;
+            res = await fetch(url, {
+                headers: { 'Authorization': `Bearer ${token}` },
+            });
+        }
+    }
+    if (!res.ok) {
+        throw new Error(`Download failed: ${res.status}`);
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get('content-disposition') || '';
+    const match = disposition.match(/filename="?([^";\n]+)"?/);
+    const filename = match ? match[1] : fallbackFilename;
+
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+        URL.revokeObjectURL(a.href);
+        a.remove();
+    }, 100);
 }
 
 /**
@@ -332,6 +451,22 @@ export function getDownloadUrl(jobId) {
     return `${base}/api/jobs/${jobId}/download`;
 }
 
+/**
+ * Download a single job result with auth.
+ */
+export async function downloadJobResult(jobId) {
+    const url = getDownloadUrl(jobId);
+    return downloadWithAuth(url, `filled_result_${jobId}`);
+}
+
+/**
+ * Download batch results with auth.
+ */
+export async function downloadBatchResult(batchId) {
+    const url = getBatchDownloadUrl(batchId);
+    return downloadWithAuth(url, `batch_${batchId}.zip`);
+}
+
 // ── Q&A CRUD ──────────────────────────────────────────────────────
 
 export async function listQAPairs({ page = 1, pageSize = 20, search = '', category = '' } = {}) {
@@ -369,7 +504,10 @@ export async function updateQAPair(id, data) {
 
 export async function deleteQAPair(id) {
     const res = await apiFetch(`/api/qa/${id}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error('Failed to delete Q&A pair');
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Failed to delete Q&A pair (${res.status})`);
+    }
     return res.json();
 }
 
@@ -394,9 +532,103 @@ export function getQAExportUrl(format = 'csv', category = '') {
     return `${base}/api/qa/export?${params}`;
 }
 
+export async function downloadQAExport(format = 'csv', category = '') {
+    const url = getQAExportUrl(format, category);
+    return downloadWithAuth(url, `qa_export.${format}`);
+}
+
 export async function listCategories() {
     const res = await apiFetch('/api/qa/categories');
     if (!res.ok) throw new Error('Failed to list categories');
+    return res.json();
+}
+
+// ── KB Deduplication ─────────────────────────────────────────────
+
+export async function detectDuplicates(threshold = 0.85, category = null) {
+    const params = new URLSearchParams({ threshold: threshold.toString() });
+    if (category) params.set('category', category);
+    return apiFetch(`/api/qa/duplicates?${params}`);
+}
+
+export async function mergeKBEntries(keepId, deleteIds) {
+    return apiFetch('/api/qa/merge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keep_id: keepId, delete_ids: deleteIds }),
+    });
+}
+
+export async function bulkMergeKBEntries(merges) {
+    return apiFetch('/api/qa/merge/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ merges }),
+    });
+}
+
+// ── Duplicate Review (AI-powered) ────────────────────────────────
+
+export async function classifyDuplicates(threshold = 0.85, category = null) {
+    const res = await apiFetch('/api/qa/duplicates/classify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ threshold, category: category || null }),
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to classify duplicates');
+    }
+    return res.json();
+}
+
+export async function listDuplicateReviews({ status = 'all', page = 1, pageSize = 20 } = {}) {
+    const params = new URLSearchParams({ status, page, page_size: pageSize });
+    const res = await apiFetch(`/api/qa/duplicates/reviews?${params}`);
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to list duplicate reviews');
+    }
+    return res.json();
+}
+
+export async function actionDuplicateReview(reviewId, action) {
+    const res = await apiFetch(`/api/qa/duplicates/reviews/${reviewId}/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to process duplicate review action');
+    }
+    return res.json();
+}
+
+export async function bulkActionDuplicateReviews(actions) {
+    const res = await apiFetch('/api/qa/duplicates/reviews/bulk-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actions }),
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to process bulk duplicate review actions');
+    }
+    return res.json();
+}
+
+// ── Audit Trail ───────────────────────────────────────────────────
+
+export async function listAuditLogs({ jobId = null, actionType = null, entityType = null, fromDate = null, toDate = null, page = 1, pageSize = 50 } = {}) {
+    const params = new URLSearchParams({ page, page_size: pageSize });
+    if (jobId !== null) params.set('job_id', jobId);
+    if (actionType) params.set('action_type', actionType);
+    if (entityType) params.set('entity_type', entityType);
+    if (fromDate) params.set('from_date', fromDate);
+    if (toDate) params.set('to_date', toDate);
+    const res = await apiFetch(`/api/audit?${params}`);
+    if (!res.ok) throw new Error('Failed to load audit logs');
     return res.json();
 }
 
@@ -418,6 +650,11 @@ export function getFlaggedExportUrl({ resolved = false, jobId = null } = {}) {
     const query = params.toString();
     const base = resolvedApiBase || normalizeBase(CONFIGURED_API_BASE || getDiscoveryBases()[0]);
     return `${base}/api/flagged/export${query ? `?${query}` : ''}`;
+}
+
+export async function downloadFlaggedExport(opts = {}) {
+    const url = getFlaggedExportUrl(opts);
+    return downloadWithAuth(url, 'flagged_export.csv');
 }
 
 export async function syncFlaggedQuestions({ jobId = null } = {}) {
@@ -458,6 +695,15 @@ export async function deduplicateFlaggedQuestions() {
     if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || 'Failed to deduplicate');
+    }
+    return res.json();
+}
+
+export async function purgeDismissedFlagged() {
+    const res = await apiFetch('/api/flagged/dismissed', { method: 'DELETE' });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to purge dismissed items');
     }
     return res.json();
 }
@@ -520,5 +766,131 @@ export async function finalizeJob(jobId) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || 'Failed to finalize');
     }
+    return res.json();
+}
+
+// ── Format Fingerprints ───────────────────────────────────────────
+
+export async function listFingerprints({ page = 1, pageSize = 50 } = {}) {
+    const params = new URLSearchParams({ page, page_size: pageSize });
+    const res = await apiFetch(`/api/fingerprints?${params}`);
+    if (!res.ok) throw new Error('Failed to list fingerprints');
+    return res.json();
+}
+
+export async function updateFingerprint(id, data) {
+    const res = await apiFetch(`/api/fingerprints/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error('Failed to update fingerprint');
+    return res.json();
+}
+
+export async function deleteFingerprint(id) {
+    const res = await apiFetch(`/api/fingerprints/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to delete fingerprint');
+    return res.json();
+}
+
+// ── Answer Corrections ────────────────────────────────────────────
+
+export async function listCorrections({ jobId = null, autoAdded = null, page = 1, pageSize = 50 } = {}) {
+    const params = new URLSearchParams({ page, page_size: pageSize });
+    if (jobId !== null) params.set('job_id', jobId);
+    if (autoAdded !== null) params.set('auto_added', autoAdded);
+    const res = await apiFetch(`/api/corrections?${params}`);
+    if (!res.ok) throw new Error('Failed to list corrections');
+    return res.json();
+}
+
+export async function getCorrectionStats() {
+    const res = await apiFetch('/api/corrections/stats');
+    if (!res.ok) throw new Error('Failed to load correction stats');
+    return res.json();
+}
+
+// ── Templates ─────────────────────────────────────────────────────
+
+export async function listTemplates({ page = 1, pageSize = 50 } = {}) {
+    const params = new URLSearchParams({ page, page_size: pageSize });
+    const res = await apiFetch(`/api/templates?${params}`);
+    if (!res.ok) throw new Error('Failed to list templates');
+    return res.json();
+}
+
+export async function createTemplate(data) {
+    const res = await apiFetch('/api/templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to create template');
+    }
+    return res.json();
+}
+
+export async function getTemplate(id) {
+    const res = await apiFetch(`/api/templates/${id}`);
+    if (!res.ok) throw new Error('Failed to get template');
+    return res.json();
+}
+
+export async function updateTemplate(id, data) {
+    const res = await apiFetch(`/api/templates/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error('Failed to update template');
+    return res.json();
+}
+
+export async function deleteTemplate(id) {
+    const res = await apiFetch(`/api/templates/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to delete template');
+    return res.json();
+}
+
+export async function updateTemplateAnswer(templateId, answerId, answerText) {
+    const res = await apiFetch(`/api/templates/${templateId}/answers/${answerId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ answer_text: answerText }),
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to update answer');
+    }
+    return res.json();
+}
+
+// ── Presets ──────────────────────────────────────────────────────
+
+export async function listPresets() {
+    const res = await apiFetch('/api/presets');
+    if (!res.ok) throw new Error('Failed to list presets');
+    return res.json();
+}
+
+export async function createPreset(data) {
+    const res = await apiFetch('/api/presets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to create preset');
+    }
+    return res.json();
+}
+
+export async function deletePreset(id) {
+    const res = await apiFetch(`/api/presets/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to delete preset');
     return res.json();
 }

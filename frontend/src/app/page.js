@@ -1,5 +1,6 @@
 'use client';
 
+import React from 'react';
 import Link from 'next/link';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
@@ -8,53 +9,24 @@ import {
   getJob,
   getBatchJobs,
   listJobs,
-  getDownloadUrl,
-  getBatchDownloadUrl,
+  downloadJobResult,
+  downloadBatchResult,
   getSettings,
   listQuestionResults,
-  updateQuestionResult,
-  approveQuestionResult,
-  approveAllQuestionResults,
-  finalizeJob,
+  listAuditLogs,
+  listTemplates,
 } from '@/lib/api';
+
+import Toast from '@/components/Toast';
+import UploadZone from '@/components/UploadZone';
+import ConfigPanel from '@/components/ConfigPanel';
+import ReviewQueue from '@/components/ReviewQueue';
 
 const SUPPORTED_EXTENSIONS = new Set(['docx', 'pdf', 'csv']);
 const FALLBACK_MAX_BULK_FILES = 50;
 
-const AGENT_MODES = [
-  {
-    name: 'off',
-    label: 'Semantic Only',
-    description: 'Use only knowledge-base semantic matching.',
-  },
-  {
-    name: 'agent',
-    label: 'Agent',
-    description: 'AI-first mode: agent handles all answers using document context + KB and flags uncertain fields (no semantic auto-match fallback).',
-  },
-];
-
-const BUILT_IN_PRESETS = [
-  { name: 'Concise Answers', instructions: 'Provide brief, factual answers. Keep responses under 2 sentences.' },
-  { name: 'Detailed Explanations', instructions: 'Provide thorough, detailed answers with context and reasoning.' },
-  { name: 'Policy-Focused', instructions: 'Answer from a compliance and policy perspective. Reference industry standards where applicable.' },
-  { name: 'Technical', instructions: 'Provide technical answers with specific details. Include version numbers and specifications where relevant.' },
-];
-
-const PRESETS_STORAGE_KEY = 'trustreply_agent_presets';
 const SESSION_JOB_KEY = 'trustreply_current_job_id';
 const SESSION_BATCH_KEY = 'trustreply_current_batch_id';
-
-function loadCustomPresets() {
-  try {
-    const raw = typeof window !== 'undefined' ? localStorage.getItem(PRESETS_STORAGE_KEY) : null;
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
-}
-
-function saveCustomPresets(presets) {
-  localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(presets));
-}
 
 function isFinishedStatus(status) {
   return status === 'done' || status === 'error';
@@ -101,7 +73,6 @@ function formatThinkingLine(event, prefix = '') {
 
 export default function UploadPage() {
   const [selectedFiles, setSelectedFiles] = useState([]);
-  const [dragover, setDragover] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [currentJob, setCurrentJob] = useState(null);
   const [currentBatch, setCurrentBatch] = useState(null);
@@ -112,20 +83,24 @@ export default function UploadPage() {
   const [agentAvailable, setAgentAvailable] = useState(false);
   const [maxBulkFiles, setMaxBulkFiles] = useState(FALLBACK_MAX_BULK_FILES);
   const [toast, setToast] = useState(null);
-  const [showPresetMenu, setShowPresetMenu] = useState(false);
-  const [customPresets, setCustomPresets] = useState([]);
   const [questionResults, setQuestionResults] = useState(null);
-  const [editingQuestionId, setEditingQuestionId] = useState(null);
-  const [editingText, setEditingText] = useState('');
-  const [reviewFilter, setReviewFilter] = useState('all');
-  const [finalizing, setFinalizing] = useState(false);
+  const [auditLogs, setAuditLogs] = useState(null);
+  const [showAuditTrail, setShowAuditTrail] = useState(false);
+  const [templatesList, setTemplatesList] = useState([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  const [openaiHasKey, setOpenaiHasKey] = useState(false);
+  const [anthropicHasKey, setAnthropicHasKey] = useState(false);
+  const [openaiModel, setOpenaiModel] = useState('');
+  const [anthropicModel, setAnthropicModel] = useState('');
+  const [selectedProvider, setSelectedProvider] = useState(null);
   const pollRef = useRef(null);
   const thinkingRef = useRef(null);
-  const presetMenuRef = useRef(null);
 
-  const showToast = useCallback((message, type = 'info') => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 4000);
+  const toastTimeout = useRef(null);
+  const showToast = useCallback((msg, type = 'info') => {
+    if (toastTimeout.current) clearTimeout(toastTimeout.current);
+    setToast({ message: msg, type });
+    toastTimeout.current = setTimeout(() => setToast(null), 4000);
   }, []);
 
   const stopPolling = useCallback(() => {
@@ -152,12 +127,16 @@ export default function UploadPage() {
         setSelectedAgentMode(data.agent_default_mode || 'agent');
         setAgentAvailable(Boolean(data.agent_available));
         setMaxBulkFiles(data.max_bulk_files || FALLBACK_MAX_BULK_FILES);
+        setOpenaiHasKey(Boolean(data.agent_openai_has_key));
+        setAnthropicHasKey(Boolean(data.agent_anthropic_has_key));
+        setOpenaiModel(data.agent_openai_model || '');
+        setAnthropicModel(data.agent_anthropic_model || '');
+        // Default selected provider based on what's configured
+        const defaultProvider = data.agent_provider || 'openai';
+        setSelectedProvider(defaultProvider === 'anthropic' ? 'anthropic' : 'openai');
       })
       .catch(() => { });
-  }, []);
-
-  useEffect(() => {
-    setCustomPresets(loadCustomPresets());
+    listTemplates().then((data) => setTemplatesList(data.items || [])).catch(() => { });
   }, []);
 
   // Restore current job/batch from sessionStorage on mount (tab switch persistence)
@@ -188,43 +167,18 @@ export default function UploadPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    const handleClickOutside = (e) => {
-      if (presetMenuRef.current && !presetMenuRef.current.contains(e.target)) {
-        setShowPresetMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+  // ── Audit Trail ─────────────────────────────────────────────
+
+  const loadAuditLogs = useCallback(async (jobId) => {
+    try {
+      const data = await listAuditLogs({ jobId, pageSize: 100 });
+      setAuditLogs(data);
+    } catch {
+      setAuditLogs(null);
+    }
   }, []);
 
-  const handleSelectPreset = (instructions) => {
-    setAgentInstructions(instructions);
-    setShowPresetMenu(false);
-  };
-
-  const handleSavePreset = () => {
-    const trimmed = agentInstructions.trim();
-    if (!trimmed) {
-      showToast('Enter instructions first', 'error');
-      return;
-    }
-    const name = prompt('Preset name:');
-    if (!name || !name.trim()) return;
-    const updated = [...customPresets, { name: name.trim(), instructions: trimmed }];
-    setCustomPresets(updated);
-    saveCustomPresets(updated);
-    showToast('✅ Preset saved', 'success');
-    setShowPresetMenu(false);
-  };
-
-  const handleDeletePreset = (index) => {
-    const updated = customPresets.filter((_, i) => i !== index);
-    setCustomPresets(updated);
-    saveCustomPresets(updated);
-  };
-
-  // ── Review Queue Handlers ─────────────────────────────────
+  // ── Review Queue ─────────────────────────────────────────────
 
   const loadQuestionResults = useCallback(async (jobId) => {
     try {
@@ -235,71 +189,22 @@ export default function UploadPage() {
     }
   }, []);
 
-  const handleApprove = async (questionId) => {
-    if (!currentJob) return;
-    try {
-      await approveQuestionResult(currentJob.id, questionId);
-      await loadQuestionResults(currentJob.id);
-    } catch (err) {
-      showToast(err.message, 'error');
+  const handleResultsChange = useCallback(() => {
+    if (currentJob) {
+      loadQuestionResults(currentJob.id);
+      if (showAuditTrail) loadAuditLogs(currentJob.id);
     }
-  };
+  }, [currentJob, showAuditTrail, loadQuestionResults, loadAuditLogs]);
 
-  const handleApproveAll = async () => {
-    if (!currentJob) return;
-    try {
-      await approveAllQuestionResults(currentJob.id);
-      await loadQuestionResults(currentJob.id);
-      showToast('All questions approved', 'success');
-    } catch (err) {
-      showToast(err.message, 'error');
+  const handleAuditRefresh = useCallback(() => {
+    if (currentJob && showAuditTrail) {
+      loadAuditLogs(currentJob.id);
     }
-  };
+  }, [currentJob, showAuditTrail, loadAuditLogs]);
 
-  const handleStartEdit = (qr) => {
-    setEditingQuestionId(qr.id);
-    setEditingText(qr.edited_answer_text || qr.answer_text || '');
-  };
-
-  const handleSaveEdit = async () => {
-    if (!currentJob || !editingQuestionId) return;
-    try {
-      await updateQuestionResult(currentJob.id, editingQuestionId, editingText);
-      setEditingQuestionId(null);
-      setEditingText('');
-      await loadQuestionResults(currentJob.id);
-      showToast('Answer updated', 'success');
-    } catch (err) {
-      showToast(err.message, 'error');
-    }
-  };
-
-  const handleCancelEdit = () => {
-    setEditingQuestionId(null);
-    setEditingText('');
-  };
-
-  const handleFinalize = async () => {
-    if (!currentJob) return;
-    setFinalizing(true);
-    try {
-      await finalizeJob(currentJob.id);
-      showToast('Document finalized. Downloading...', 'success');
-      window.open(getDownloadUrl(currentJob.id), '_blank');
-      refreshJobs();
-    } catch (err) {
-      showToast(err.message, 'error');
-    } finally {
-      setFinalizing(false);
-    }
-  };
-
-  const filteredQuestionResults = useMemo(() => {
-    if (!questionResults?.items) return [];
-    if (reviewFilter === 'unreviewed') return questionResults.items.filter((q) => !q.reviewed);
-    if (reviewFilter === 'low_confidence') return questionResults.items.filter((q) => q.confidence_score !== null && q.confidence_score < 0.7);
-    return questionResults.items;
-  }, [questionResults, reviewFilter]);
+  const handleTemplatesRefresh = useCallback(() => {
+    listTemplates().then((data) => setTemplatesList(data.items || [])).catch(() => { });
+  }, []);
 
   const pollJob = useCallback(async (jobId) => {
     try {
@@ -357,8 +262,6 @@ export default function UploadPage() {
     setCurrentJob(null);
     setCurrentBatch(null);
     setQuestionResults(null);
-    setEditingQuestionId(null);
-    setReviewFilter('all');
     sessionStorage.removeItem(SESSION_JOB_KEY);
     sessionStorage.removeItem(SESSION_BATCH_KEY);
   }, [stopPolling]);
@@ -407,6 +310,17 @@ export default function UploadPage() {
     setUploading(true);
     stopPolling();
 
+    // Build per-upload agent config when both providers are available or a specific one is selected
+    const agentConfig = (() => {
+      if (selectedProvider === 'anthropic' && anthropicHasKey) {
+        return { provider: 'anthropic', apiBase: 'https://api.anthropic.com/v1', model: anthropicModel || undefined };
+      }
+      if (selectedProvider === 'openai' && openaiHasKey) {
+        return { provider: 'openai', apiBase: 'https://api.openai.com/v1', model: openaiModel || undefined };
+      }
+      return null;
+    })();
+
     try {
       if (selectedFiles.length === 1) {
         const job = await uploadDocument(
@@ -415,6 +329,8 @@ export default function UploadPage() {
           {
             agentMode: selectedAgentMode,
             agentInstructions,
+            agentConfig,
+            templateId: selectedTemplateId || undefined,
           },
         );
         setCurrentBatch(null);
@@ -431,6 +347,7 @@ export default function UploadPage() {
           {
             agentMode: selectedAgentMode,
             agentInstructions,
+            agentConfig,
           },
         );
         setCurrentJob(null);
@@ -448,30 +365,15 @@ export default function UploadPage() {
     }
   };
 
-  const handleFileChange = (e) => {
-    handleSelectedFiles(e.target.files);
-  };
-
-  const handleDragOver = (e) => {
-    e.preventDefault();
-    setDragover(true);
-  };
-
-  const handleDragLeave = () => setDragover(false);
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    setDragover(false);
-    handleSelectedFiles(e.dataTransfer.files);
-  };
-
   useEffect(() => {
     if (currentJob?.status === 'done') {
       loadQuestionResults(currentJob.id);
+      loadAuditLogs(currentJob.id);
     } else {
       setQuestionResults(null);
+      setAuditLogs(null);
     }
-  }, [currentJob?.status, currentJob?.id, loadQuestionResults]);
+  }, [currentJob?.status, currentJob?.id, loadQuestionResults, loadAuditLogs]);
 
   useEffect(() => {
     return () => stopPolling();
@@ -583,11 +485,7 @@ export default function UploadPage() {
 
   return (
     <div className="page-container">
-      {toast && (
-        <div className="toast-container">
-          <div className={`toast toast-${toast.type}`}>{toast.message}</div>
-        </div>
-      )}
+      <Toast toast={toast} />
 
       <div className="page-header" style={{ textAlign: 'center', marginBottom: '2.5rem' }}>
         <h1 style={{ fontSize: '2.5rem', marginBottom: '0.65rem' }}>TrustReply</h1>
@@ -596,160 +494,29 @@ export default function UploadPage() {
         </p>
       </div>
 
-      <div className="card" style={{ marginBottom: '1.25rem', padding: '1rem 1.25rem' }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'end' }}>
-          <div style={{ flex: '1 1 260px' }}>
-            <label className="form-label">Answering Mode</label>
-            <select
-              className="form-select"
-              value={selectedAgentMode}
-              onChange={(e) => setSelectedAgentMode(e.target.value)}
-            >
-              {AGENT_MODES.map((mode) => (
-                <option key={mode.name} value={mode.name}>
-                  {mode.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div style={{ flex: '2 1 360px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-            <div>
-              {AGENT_MODES.find((mode) => mode.name === selectedAgentMode)?.description}
-            </div>
-            {selectedAgentMode !== 'off' && (
-              <div style={{ marginTop: '0.35rem' }}>
-                TrustReply still uses the default parser internally to anchor exact question/answer placement.
-              </div>
-            )}
-          </div>
-        </div>
+      <ConfigPanel
+        selectedAgentMode={selectedAgentMode}
+        onAgentModeChange={setSelectedAgentMode}
+        agentInstructions={agentInstructions}
+        onInstructionsChange={setAgentInstructions}
+        agentAvailable={agentAvailable}
+        templatesList={templatesList}
+        selectedTemplateId={selectedTemplateId}
+        onTemplateChange={setSelectedTemplateId}
+        showToast={showToast}
+        openaiHasKey={openaiHasKey}
+        anthropicHasKey={anthropicHasKey}
+        openaiModel={openaiModel}
+        anthropicModel={anthropicModel}
+        selectedProvider={selectedProvider}
+        onProviderChange={setSelectedProvider}
+      />
 
-        {selectedAgentMode !== 'off' && (
-          <>
-            {agentModeBlocked && (
-              <div
-                style={{
-                  marginTop: '0.8rem',
-                  padding: '0.7rem 0.9rem',
-                  borderRadius: 'var(--radius-md)',
-                  background: 'var(--warning-bg)',
-                  color: 'var(--warning)',
-                  fontSize: '0.88rem',
-                }}
-              >
-                Agent is not configured. Go to{' '}
-                <Link
-                  href="/settings"
-                  style={{
-                    color: 'var(--warning)',
-                    textDecoration: 'underline',
-                    textUnderlineOffset: '0.15rem',
-                  }}
-                >
-                  Settings
-                </Link>{' '}
-                to set up your AI provider credentials.
-              </div>
-            )}
-
-            <div style={{ marginTop: '0.9rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.35rem' }}>
-                <label className="form-label" style={{ margin: 0 }}>Agent Instructions (Optional)</label>
-                <div style={{ position: 'relative' }} ref={presetMenuRef}>
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-secondary"
-                    onClick={() => setShowPresetMenu(!showPresetMenu)}
-                  >
-                    Presets ▾
-                  </button>
-                  {showPresetMenu && (
-                    <div className="preset-dropdown">
-                      {BUILT_IN_PRESETS.map((preset) => (
-                        <button key={preset.name} className="preset-dropdown-item" onClick={() => handleSelectPreset(preset.instructions)}>
-                          {preset.name}
-                        </button>
-                      ))}
-                      {customPresets.length > 0 && <div className="preset-dropdown-divider" />}
-                      {customPresets.map((preset, i) => (
-                        <div key={i} style={{ display: 'flex', alignItems: 'center' }}>
-                          <button className="preset-dropdown-item" style={{ flex: 1 }} onClick={() => handleSelectPreset(preset.instructions)}>
-                            {preset.name}
-                          </button>
-                          <button className="preset-dropdown-delete" onClick={() => handleDeletePreset(i)} title="Remove preset">
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                      <div className="preset-dropdown-divider" />
-                      <button className="preset-dropdown-item preset-dropdown-save" onClick={handleSavePreset}>
-                        + Save current as preset
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-              <textarea
-                className="form-textarea"
-                rows={3}
-                placeholder="Example: prioritize context from this document over generic answers, and flag unknown legal/entity-specific fields."
-                value={agentInstructions}
-                onChange={(e) => setAgentInstructions(e.target.value)}
-              />
-            </div>
-          </>
-        )}
-      </div>
-
-      <div
-        className={`upload-zone ${dragover ? 'dragover' : ''}`}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        <input
-          type="file"
-          accept=".docx,.pdf,.csv"
-          multiple
-          onChange={handleFileChange}
-          id="file-upload"
-        />
-        <span className="upload-zone-icon">📁</span>
-        <div className="upload-zone-title">
-          {selectedFiles.length === 0
-            ? 'Drop your questionnaire files here'
-            : selectedFiles.length === 1
-              ? selectedFiles[0].name
-              : `${selectedFiles.length} files selected`}
-        </div>
-        <div className="upload-zone-subtitle">
-          {selectedFiles.length === 0
-            ? `Supports .docx, .pdf, and .csv files. You can drop multiple files at once, up to ${maxBulkFiles} per batch.`
-            : `${(selectedFiles.reduce((total, file) => total + file.size, 0) / 1024).toFixed(1)} KB total`
-          }
-        </div>
-      </div>
-
-      {selectedFiles.length > 0 && (
-        <div className="card" style={{ marginTop: '1rem' }}>
-          <div style={{ fontWeight: 700, marginBottom: '0.75rem' }}>
-            Ready to upload {selectedFiles.length} {selectedFiles.length === 1 ? 'document' : 'documents'}
-          </div>
-          <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '0.75rem' }}>
-            Site limit: up to {maxBulkFiles} files per batch.
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-            {selectedFiles.slice(0, 6).map((selectedFile) => (
-              <div key={`${selectedFile.name}-${selectedFile.size}`}>{selectedFile.name}</div>
-            ))}
-            {selectedFiles.length > 6 && (
-              <div style={{ color: 'var(--text-muted)' }}>
-                And {selectedFiles.length - 6} more files...
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      <UploadZone
+        selectedFiles={selectedFiles}
+        maxBulkFiles={maxBulkFiles}
+        onFilesSelected={handleSelectedFiles}
+      />
 
       {selectedFiles.length > 0 && !uploading && (
         <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
@@ -840,7 +607,7 @@ export default function UploadPage() {
                 <div className="stats-grid">
                   <div className="stat-card">
                     <div className="stat-value">{currentJob.total_questions}</div>
-                    <div className="stat-label">Questions Found</div>
+                    <div className="stat-label">Questions</div>
                   </div>
                   <div className="stat-card">
                     <div className="stat-value">{currentJob.matched_questions}</div>
@@ -850,16 +617,38 @@ export default function UploadPage() {
                     <div className="stat-value">{currentJob.flagged_questions_count}</div>
                     <div className="stat-label">Flagged</div>
                   </div>
+                  {currentJob.agent_llm_calls > 0 && (
+                    <div className="stat-card">
+                      <div className="stat-value">{currentJob.agent_llm_calls}</div>
+                      <div className="stat-label">LLM Calls</div>
+                    </div>
+                  )}
+                  {(currentJob.agent_input_tokens > 0 || currentJob.agent_output_tokens > 0) && (
+                    <div className="stat-card">
+                      <div className="stat-value">
+                        {((currentJob.agent_input_tokens || 0) + (currentJob.agent_output_tokens || 0)).toLocaleString()}
+                      </div>
+                      <div className="stat-label">Tokens Used</div>
+                    </div>
+                  )}
+                  {currentJob.agent_kb_routed > 0 && (
+                    <div className="stat-card">
+                      <div className="stat-value">{currentJob.agent_kb_routed}</div>
+                      <div className="stat-label">KB Direct</div>
+                    </div>
+                  )}
                 </div>
-                <div style={{ marginBottom: '1rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                  Parser: <strong>{currentJob.parser_profile_name || 'default'}</strong>
-                  {' · '}
-                  Strategy: <strong>{currentJob.parser_strategy || 'heuristic'}</strong>
+                <div className="job-detail-meta">
+                  <span>Parser: <strong>{currentJob.parser_profile_name || 'default'}</strong></span>
+                  <span>Strategy: <strong>{currentJob.parser_strategy || 'heuristic'}</strong></span>
                   {typeof currentJob.parse_confidence === 'number' && (
-                    <>
-                      {' · '}
-                      Confidence: <strong>{Math.round(currentJob.parse_confidence * 100)}%</strong>
-                    </>
+                    <span>Confidence: <strong>{Math.round(currentJob.parse_confidence * 100)}%</strong></span>
+                  )}
+                  {currentJob.agent_model && currentJob.agent_mode !== 'off' && (
+                    <span>Model: <strong>{currentJob.agent_model}</strong></span>
+                  )}
+                  {currentJob.agent_input_tokens > 0 && currentJob.agent_output_tokens > 0 && (
+                    <span>In/Out: <strong>{(currentJob.agent_input_tokens || 0).toLocaleString()}</strong> / <strong>{(currentJob.agent_output_tokens || 0).toLocaleString()}</strong></span>
                   )}
                 </div>
                 {currentJob.fallback_recommended && (
@@ -892,148 +681,80 @@ export default function UploadPage() {
                 )}
 
                 {/* ── Review Queue ─────────────────────────── */}
-                {questionResults && questionResults.total > 0 ? (
-                  <div style={{ marginTop: '1rem' }}>
-                    <div className="review-toolbar">
-                      <span style={{ fontWeight: 700 }}>
-                        {questionResults.reviewed_count}/{questionResults.total} reviewed
-                      </span>
-                      <select
-                        className="form-select"
-                        style={{ width: 'auto', minWidth: '160px' }}
-                        value={reviewFilter}
-                        onChange={(e) => setReviewFilter(e.target.value)}
-                      >
-                        <option value="all">All Questions ({questionResults.total})</option>
-                        <option value="unreviewed">Needs Review ({questionResults.unreviewed_count})</option>
-                        <option value="low_confidence">Low Confidence</option>
-                      </select>
-                      <button className="btn btn-sm btn-secondary" onClick={handleApproveAll} disabled={questionResults.unreviewed_count === 0}>
-                        Approve All
-                      </button>
-                    </div>
+                <ReviewQueue
+                  currentJob={currentJob}
+                  questionResults={questionResults}
+                  onResultsChange={handleResultsChange}
+                  onAuditRefresh={handleAuditRefresh}
+                  onTemplatesRefresh={handleTemplatesRefresh}
+                  showToast={showToast}
+                />
 
-                    <div style={{ overflowX: 'auto' }}>
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th style={{ width: '3rem' }}>#</th>
-                            <th style={{ width: '30%' }}>Question</th>
-                            <th style={{ width: '35%' }}>Answer</th>
-                            <th style={{ width: '7rem' }}>Confidence</th>
-                            <th style={{ width: '6rem' }}>Source</th>
-                            <th style={{ width: '10rem' }}>Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {filteredQuestionResults.map((qr) => (
-                            <tr key={qr.id} className={qr.reviewed ? 'row-reviewed' : ''}>
-                              <td>{qr.question_index + 1}</td>
-                              <td style={{ fontSize: '0.85rem' }}>{qr.question_text}</td>
-                              <td style={{ fontSize: '0.85rem' }}>
-                                {editingQuestionId === qr.id ? (
-                                  <div>
-                                    <textarea
-                                      className="inline-edit-area"
-                                      value={editingText}
-                                      onChange={(e) => setEditingText(e.target.value)}
-                                      rows={3}
-                                    />
-                                    <div className="inline-edit-actions">
-                                      <button className="btn btn-sm btn-primary" onClick={handleSaveEdit}>Save</button>
-                                      <button className="btn btn-sm btn-secondary" onClick={handleCancelEdit}>Cancel</button>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <span style={{ color: qr.answer_text ? 'var(--text-primary)' : 'var(--error)' }}>
-                                    {qr.edited_answer_text || qr.answer_text || 'No answer'}
-                                  </span>
-                                )}
-                              </td>
-                              <td>
-                                {(() => {
-                                  const score = qr.confidence_score;
-                                  if (score == null) return <span className="confidence-badge confidence-unknown">N/A</span>;
-                                  if (score >= 0.85) return <span className="confidence-badge confidence-high">{Math.round(score * 100)}%</span>;
-                                  if (score >= 0.70) return <span className="confidence-badge confidence-medium">{Math.round(score * 100)}%</span>;
-                                  return <span className="confidence-badge confidence-low">{Math.round(score * 100)}%</span>;
-                                })()}
-                              </td>
-                              <td>
-                                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                                  {qr.source === 'kb_match' ? 'KB' : qr.source === 'resolved_flagged' ? 'Resolved' : qr.source === 'agent' ? 'Agent' : 'Unmatched'}
-                                </span>
-                              </td>
-                              <td>
-                                <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                                  {!qr.reviewed && (
-                                    <button
-                                      className="btn btn-sm btn-success"
-                                      onClick={() => handleApprove(qr.id)}
-                                      title="Approve"
-                                    >
-                                      ✓
-                                    </button>
-                                  )}
-                                  <button
-                                    className="btn btn-sm btn-secondary"
-                                    onClick={() => handleStartEdit(qr)}
-                                    title="Edit answer"
-                                  >
-                                    ✎
-                                  </button>
-                                  {qr.reviewed && (
-                                    <span className="status-badge status-done" style={{ fontSize: '0.72rem' }}>Reviewed</span>
-                                  )}
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                          {filteredQuestionResults.length === 0 && (
-                            <tr>
-                              <td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
-                                {reviewFilter === 'unreviewed' ? 'All questions have been reviewed!' : 'No questions match this filter.'}
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
-                      <button
-                        className="btn btn-success btn-lg"
-                        onClick={handleFinalize}
-                        disabled={finalizing}
-                      >
-                        {finalizing ? 'Generating...' : 'Finalize & Download'}
-                      </button>
-                      {questionResults.unreviewed_count > 0 && (
-                        <div style={{ color: 'var(--warning)', fontSize: '0.85rem', marginTop: '0.5rem' }}>
-                          {questionResults.unreviewed_count} question(s) not yet reviewed
-                        </div>
-                      )}
-                      <div style={{ marginTop: '0.5rem' }}>
-                        <a
-                          href={getDownloadUrl(currentJob.id)}
-                          className="btn btn-sm btn-secondary"
-                          download
-                          style={{ fontSize: '0.82rem' }}
-                        >
-                          Download without review
-                        </a>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ textAlign: 'center' }}>
-                    <a
-                      href={getDownloadUrl(currentJob.id)}
-                      className="btn btn-success btn-lg"
-                      download
+                {/* ── Audit Trail ─────────────────────────── */}
+                {questionResults && questionResults.total > 0 && (
+                  <div style={{ marginTop: '2rem', borderTop: '1px solid var(--border-color, #e0e0e0)', paddingTop: '1rem' }}>
+                    <button
+                      className="btn btn-sm btn-secondary"
+                      onClick={() => {
+                        setShowAuditTrail((prev) => !prev);
+                        if (!auditLogs && currentJob) loadAuditLogs(currentJob.id);
+                      }}
+                      style={{ marginBottom: '0.5rem' }}
                     >
-                      Download Filled File
-                    </a>
+                      {showAuditTrail ? '▾ Hide Audit Trail' : '▸ Show Audit Trail'}
+                    </button>
+                    {showAuditTrail && (
+                      <div style={{ maxHeight: '300px', overflowY: 'auto', fontSize: '0.82rem' }}>
+                        {auditLogs && auditLogs.items && auditLogs.items.length > 0 ? (
+                          <table className="data-table" style={{ fontSize: '0.8rem' }}>
+                            <thead>
+                              <tr>
+                                <th style={{ width: '10rem' }}>Time</th>
+                                <th style={{ width: '8rem' }}>Action</th>
+                                <th style={{ width: '6rem' }}>Entity</th>
+                                <th>Details</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {auditLogs.items.map((log) => (
+                                <tr key={log.id}>
+                                  <td style={{ whiteSpace: 'nowrap' }}>
+                                    {new Date(log.timestamp).toLocaleString()}
+                                  </td>
+                                  <td>
+                                    <span style={{
+                                      padding: '0.1rem 0.4rem',
+                                      borderRadius: '3px',
+                                      background: log.action_type.includes('approve') ? 'var(--success-bg, #d4edda)' :
+                                        log.action_type.includes('edit') ? 'var(--info-bg, #d1ecf1)' :
+                                        log.action_type.includes('delete') || log.action_type.includes('dismiss') ? 'var(--error-bg, #f8d7da)' :
+                                        'var(--surface-alt, #f0f0f0)',
+                                      fontSize: '0.75rem',
+                                    }}>
+                                      {log.action_type.replace(/_/g, ' ')}
+                                    </span>
+                                  </td>
+                                  <td>{log.entity_type}</td>
+                                  <td style={{ maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                    {log.before_value && log.after_value
+                                      ? `"${log.before_value.slice(0, 40)}${log.before_value.length > 40 ? '...' : ''}" → "${log.after_value.slice(0, 40)}${log.after_value.length > 40 ? '...' : ''}"`
+                                      : log.details
+                                        ? JSON.stringify(log.details).slice(0, 80)
+                                        : log.after_value
+                                          ? log.after_value.slice(0, 80)
+                                          : '—'}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        ) : (
+                          <div style={{ color: 'var(--text-muted)', padding: '1rem', textAlign: 'center' }}>
+                            No audit events recorded for this job yet.
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </>
@@ -1202,13 +923,12 @@ export default function UploadPage() {
 
             {batchSummary.doneCount > 0 && (
               <div style={{ marginTop: '1.25rem', textAlign: 'center' }}>
-                <a
-                  href={getBatchDownloadUrl(currentBatch.batch_id)}
+                <button
                   className="btn btn-success btn-lg"
-                  download
+                  onClick={() => downloadBatchResult(currentBatch.batch_id)}
                 >
                   Download All Results (.zip)
-                </a>
+                </button>
               </div>
             )}
           </div>
@@ -1271,19 +991,19 @@ export default function UploadPage() {
                         </span>
                       )}
                       {job.agent_mode && job.agent_mode !== 'off' && (
-                        <span>
-                          Agent {job.agent_mode}
-                          {job.agent_status ? ` (${job.agent_status})` : ''}
-                        </span>
+                        <span>Agent ({job.agent_status || job.agent_mode})</span>
+                      )}
+                      {job.agent_llm_calls > 0 && (
+                        <span>{job.agent_llm_calls} calls · {((job.agent_input_tokens || 0) + (job.agent_output_tokens || 0)).toLocaleString()} tokens</span>
+                      )}
+                      {job.agent_kb_routed > 0 && (
+                        <span>{job.agent_kb_routed} KB-direct</span>
                       )}
                       {job.total_questions === 0 && (
                         <span style={{ color: 'var(--warning)' }}>No questions found</span>
                       )}
                       {job.fallback_recommended && (
                         <span style={{ color: 'var(--warning)' }}>Review parser</span>
-                      )}
-                      {job.flagged_questions_count > 0 && (
-                        <span style={{ color: 'var(--warning)' }}>Review-required placeholders inserted</span>
                       )}
                       {job.status === 'error' && (
                         <span style={{ color: 'var(--error)' }}>Processing error</span>
@@ -1300,13 +1020,12 @@ export default function UploadPage() {
                       {statusMeta.label}
                     </span>
                     {job.status === 'done' && (
-                      <a
-                        href={getDownloadUrl(job.id)}
+                      <button
                         className="btn btn-sm btn-secondary"
-                        download
+                        onClick={() => downloadJobResult(job.id)}
                       >
                         Download
-                      </a>
+                      </button>
                     )}
                   </div>
                       </>
@@ -1342,9 +1061,7 @@ export default function UploadPage() {
                         minute: '2-digit',
                       })}
                     </span>
-                    <span>
-                      {job.matched_questions}/{job.total_questions} matched
-                    </span>
+                    <span>{job.matched_questions}/{job.total_questions} matched</span>
                     {job.batch_id && (
                       <span>Batch #{shortBatchId(job.batch_id)}</span>
                     )}
@@ -1355,10 +1072,13 @@ export default function UploadPage() {
                       </span>
                     )}
                     {job.agent_mode && job.agent_mode !== 'off' && (
-                      <span>
-                        Agent {job.agent_mode}
-                        {job.agent_status ? ` (${job.agent_status})` : ''}
-                      </span>
+                      <span>Agent ({job.agent_status || job.agent_mode})</span>
+                    )}
+                    {job.agent_llm_calls > 0 && (
+                      <span>{job.agent_llm_calls} calls · {((job.agent_input_tokens || 0) + (job.agent_output_tokens || 0)).toLocaleString()} tokens</span>
+                    )}
+                    {job.agent_kb_routed > 0 && (
+                      <span>{job.agent_kb_routed} KB-direct</span>
                     )}
                     {job.flagged_questions_count > 0 && (
                       <span style={{ color: 'var(--warning)' }}>
@@ -1377,22 +1097,20 @@ export default function UploadPage() {
                     {statusMeta.label}
                   </span>
                   {job.status === 'done' && (
-                    <a
-                      href={getDownloadUrl(job.id)}
+                    <button
                       className="btn btn-sm btn-secondary"
-                      download
+                      onClick={() => downloadJobResult(job.id)}
                     >
                       Download
-                    </a>
+                    </button>
                   )}
                   {job.batch_id && (
-                    <a
-                      href={getBatchDownloadUrl(job.batch_id)}
+                    <button
                       className="btn btn-sm btn-secondary"
-                      download
+                      onClick={() => downloadBatchResult(job.batch_id)}
                     >
                       Batch ZIP
-                    </a>
+                    </button>
                   )}
                 </div>
                     </>
