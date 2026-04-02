@@ -1,14 +1,15 @@
 """Upload & processing job endpoints."""
 
 from __future__ import annotations
+import asyncio
 import datetime
 import uuid
 import zipfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks, Form
-from sqlalchemy import select
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks, Form, Query
+from sqlalchemy import select, func as sa_func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db, async_session, init_db
@@ -38,6 +39,8 @@ from app.services.agent import (
     run_contextual_fill_agent,
     run_troubleshoot_agent,
 )
+from app.services.audit import log_audit
+from app.services.fingerprint import find_matching_fingerprint, save_fingerprint
 from app.utils.questions import normalize_question_key
 
 router = APIRouter(prefix="/api", tags=["upload"])
@@ -94,7 +97,12 @@ def _build_runtime_agent_config(
     agent_api_key: str | None = None,
     agent_model: str | None = None,
 ) -> AgentRuntimeConfig | None:
-    """Build an optional per-request agent configuration override."""
+    """Build an optional per-request agent configuration override.
+
+    When the frontend sends only a provider (e.g. ``anthropic``), the key,
+    base URL, and model are resolved from the per-provider settings stored
+    in the backend.  This avoids sending API keys from the browser.
+    """
 
     provider = _clean_optional_form_value(agent_provider)
     api_base = _clean_optional_form_value(agent_api_base)
@@ -104,6 +112,26 @@ def _build_runtime_agent_config(
     has_override = any(value is not None for value in (provider, api_base, api_key, model))
     if not has_override:
         return None
+
+    # Auto-fill missing fields from per-provider settings
+    norm = (provider or "").strip().lower()
+    if norm == "anthropic":
+        api_base = api_base or "https://api.anthropic.com/v1"
+        api_key = api_key or settings.agent_anthropic_api_key or settings.agent_api_key or ""
+        model = model or settings.agent_anthropic_model or "claude-sonnet-4-6"
+    elif norm in ("openai", "openai-compatible"):
+        api_base = api_base or "https://api.openai.com/v1"
+        api_key = api_key or settings.agent_openai_api_key or settings.agent_api_key or ""
+        model = model or settings.agent_openai_model or "gpt-4.1-nano"
+    else:
+        # Unknown provider — fall back to legacy settings
+        api_base = api_base or settings.agent_api_base or ""
+        api_key = api_key or settings.agent_api_key or ""
+        model = model or settings.agent_model or ""
+
+    api_key = api_key.strip()
+    api_base = api_base.strip()
+    model = model.strip()
 
     missing = []
     if not api_base:
@@ -188,7 +216,15 @@ async def _create_processing_job(
     stored_name = f"{uuid.uuid4().hex}{suffix}"
     dest = settings.upload_dir / stored_name
 
-    content = await file.read()
+    # Validate file size using streaming read to avoid loading arbitrarily large files
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+    content = await file.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File '{file.filename}' exceeds the maximum upload size of {settings.max_upload_size_mb} MB.",
+        )
+
     dest.write_bytes(content)
 
     job = ProcessingJob(
@@ -334,14 +370,38 @@ def _build_troubleshoot_summary(
     return recommended_profile, recommended_label, reason, hints
 
 
+async def _process_batch_concurrent(
+    job_ids: list[int],
+    agent_instructions: str | None = None,
+    runtime_agent_config: AgentRuntimeConfig | None = None,
+) -> None:
+    """Process multiple batch jobs concurrently using a semaphore to limit parallelism."""
+
+    # Ensure DB schema is ready once before the batch starts
+    await init_db()
+
+    max_concurrent = settings.agent_max_concurrent_jobs
+
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def _run_with_limit(job_id: int) -> None:
+        async with semaphore:
+            await _process_document(job_id, agent_instructions, runtime_agent_config)
+
+    await asyncio.gather(
+        *[_run_with_limit(job_id) for job_id in job_ids],
+        return_exceptions=True,
+    )
+
+
 async def _process_document(
     job_id: int,
     agent_instructions: str | None = None,
     runtime_agent_config: AgentRuntimeConfig | None = None,
+    template_id: int | None = None,
 ) -> None:
     """Background task: parse → match/fill strategy → generate output."""
 
-    await init_db()
     async with async_session() as db:
         try:
             job = await db.get(ProcessingJob, job_id)
@@ -396,9 +456,33 @@ async def _process_document(
             source_path = settings.upload_dir / job.stored_filename
             suffix = source_path.suffix.lower()
 
+            # ── Format fingerprint auto-detection ─────────────────────
+            effective_profile = job.parser_profile_name or settings.default_parser_profile
+            effective_hints = settings.parser_hint_overrides or None
+            fingerprint_match = await find_matching_fingerprint(source_path, db)
+            if fingerprint_match and effective_profile == settings.default_parser_profile:
+                effective_profile = fingerprint_match.parser_profile
+                if fingerprint_match.hint_overrides:
+                    effective_hints = fingerprint_match.hint_overrides
+                fingerprint_match.last_used_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+                _append_job_trace(
+                    job,
+                    step="fingerprint",
+                    status="matched",
+                    message=f"Auto-detected format: profile '{effective_profile}' from learned fingerprint.",
+                    data={
+                        "fingerprint_id": fingerprint_match.id,
+                        "fingerprint_name": fingerprint_match.name,
+                        "success_count": fingerprint_match.success_count,
+                    },
+                )
+
             parse_result = parse_document_result(
                 source_path,
-                options=get_parse_options(job.parser_profile_name or settings.default_parser_profile),
+                options=get_parse_options(
+                    effective_profile,
+                    hint_overrides=effective_hints,
+                ),
             )
             items = parse_result.items
             job.total_questions = len(items)
@@ -415,13 +499,49 @@ async def _process_document(
                 message=f"Extracted {len(items)} question(s) with parser profile '{parse_result.profile_name}'.",
                 data={"confidence": parse_result.confidence},
             )
-            await db.commit()
+            await db.commit()  # Commit fingerprint + parser results together
+
+            # ── Template pre-fill ─────────────────────────────────────
+            if template_id is not None:
+                from app.models import QuestionnaireTemplate, TemplateAnswer
+                template = await db.get(QuestionnaireTemplate, template_id)
+                if template:
+                    result = await db.execute(
+                        select(TemplateAnswer).where(TemplateAnswer.template_id == template_id)
+                    )
+                    template_answers = result.scalars().all()
+                    template_lookup: dict[str, str] = {}
+                    for ta in template_answers:
+                        key = normalize_question_key(ta.question_text)
+                        template_lookup[key] = ta.answer_text
+
+                    prefilled = 0
+                    for item in items:
+                        if item.answer_text is not None:
+                            continue
+                        key = normalize_question_key(item.question_text)
+                        if key in template_lookup:
+                            item.answer_text = template_lookup[key]
+                            item.matched_source = "template"
+                            item.confidence = 0.95
+                            prefilled += 1
+
+                    template.times_used = (template.times_used or 0) + 1
+                    template.last_used_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+                    _append_job_trace(
+                        job,
+                        step="template",
+                        status="completed",
+                        message=f"Pre-filled {prefilled} answer(s) from template '{template.name}'.",
+                        data={"template_id": template_id, "prefilled": prefilled},
+                    )
+                    await db.commit()
 
             if not items:
                 job.status = "done"
                 job.matched_questions = 0
                 job.flagged_questions_count = 0
-                job.completed_at = datetime.datetime.utcnow()
+                job.completed_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
                 if suffix in {".docx", ".csv"}:
                     output_name = f"filled_{job.stored_filename}"
                     import shutil
@@ -434,6 +554,7 @@ async def _process_document(
                 await db.commit()
                 return
 
+            agent_result: dict[str, Any] | None = None
             prior_flagged_by_key: dict[str, FlaggedQuestion] = {}
             if job.agent_mode == AGENT_MODE_OFF:
                 items, flagged = await match_questions(items, job_id, db)
@@ -455,7 +576,6 @@ async def _process_document(
                         "flagged": len(flagged),
                     },
                 )
-                await db.commit()
             else:
                 _append_job_trace(
                     job,
@@ -463,7 +583,7 @@ async def _process_document(
                     status="skipped",
                     message="Semantic matcher skipped in Agent mode (AI-first flow).",
                 )
-                await db.commit()
+            # Defer commit — will happen before agent run or at final save
 
             if job.agent_mode != AGENT_MODE_OFF and is_agent_available(runtime_agent_config):
                 try:
@@ -494,6 +614,12 @@ async def _process_document(
                     job.agent_status = str(agent_result.get("status") or "completed")
                     job.agent_summary = str(agent_result.get("summary") or "Agent run completed.")
                     job.agent_error = None
+                    # Store token usage stats
+                    agent_stats = agent_result.get("stats", {})
+                    job.agent_input_tokens = agent_stats.get("input_tokens")
+                    job.agent_output_tokens = agent_stats.get("output_tokens")
+                    job.agent_llm_calls = agent_stats.get("llm_calls")
+                    job.agent_kb_routed = agent_stats.get("kb_routed")
                     await db.commit()
                 except Exception as agent_exc:
                     job.agent_status = "error"
@@ -516,6 +642,13 @@ async def _process_document(
             job.matched_questions = sum(1 for item in items if item.answer_text is not None)
             job.flagged_questions_count = len(flagged)
 
+            # Build lookup for agent reasoning data (reason + issues per question)
+            agent_decisions_lookup: dict[str, dict] = {}
+            if agent_result is not None:
+                for dec in agent_result.get("decisions", []):
+                    if isinstance(dec, dict) and "id" in dec:
+                        agent_decisions_lookup[dec["id"]] = dec
+
             # Store per-question results for confidence visibility & review queue
             for idx, item in enumerate(items):
                 source = "unmatched"
@@ -527,6 +660,8 @@ async def _process_document(
                     else:
                         source = "kb_match"
 
+                # Attach agent reasoning if available
+                decision = agent_decisions_lookup.get(f"q_{idx}", {})
                 qr = QuestionResult(
                     job_id=job_id,
                     question_index=idx,
@@ -539,6 +674,8 @@ async def _process_document(
                     formatting_info=_serialize_run_format(item.formatting),
                     item_type=item.item_type,
                     reviewed=False,
+                    agent_reason=decision.get("reason"),
+                    agent_issues=decision.get("issues"),
                 )
                 db.add(qr)
 
@@ -557,7 +694,21 @@ async def _process_document(
 
             job.output_filename = output_name
             job.status = "done"
-            job.completed_at = datetime.datetime.utcnow()
+            job.completed_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
+            # ── Save format fingerprint ───────────────────────────────
+            if len(items) > 0:
+                try:
+                    await save_fingerprint(
+                        file_path=source_path,
+                        parser_profile=job.parser_profile_name or settings.default_parser_profile,
+                        hint_overrides=settings.parser_hint_overrides or None,
+                        original_filename=job.original_filename,
+                        db=db,
+                    )
+                except Exception:
+                    pass  # best-effort
+
             await db.commit()
 
         except Exception as e:
@@ -580,6 +731,7 @@ async def _process_document(
 async def upload_document(
     file: UploadFile = File(...),
     parser_profile: str | None = Form(None),
+    template_id: str | None = Form(None),
     agent_mode: str | None = Form(None),
     agent_instructions: str | None = Form(None),
     agent_provider: str | None = Form(None),
@@ -596,6 +748,16 @@ async def upload_document(
             status_code=400,
             detail=f"Unknown parser profile '{parser_profile}'",
         )
+
+    # Validate template_id if provided
+    template_id_parsed = None
+    if template_id is not None:
+        template_id_str = str(template_id).strip()
+        if template_id_str and template_id_str != 'null':
+            try:
+                template_id_parsed = int(template_id_str)
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=400, detail=f"Invalid template_id '{template_id}'")
 
     try:
         normalized_agent_mode = normalize_agent_mode(agent_mode)
@@ -625,6 +787,7 @@ async def upload_document(
         job.id,
         _clean_optional_form_value(agent_instructions),
         runtime_agent_config,
+        template_id_parsed,
     )
 
     return job
@@ -689,12 +852,14 @@ async def bulk_upload_documents(
     await db.commit()
     for job in jobs:
         await db.refresh(job)
-        background_tasks.add_task(
-            _process_document,
-            job.id,
-            cleaned_instructions,
-            runtime_agent_config,
-        )
+
+    # Process batch jobs concurrently instead of sequentially
+    background_tasks.add_task(
+        _process_batch_concurrent,
+        [job.id for job in jobs],
+        cleaned_instructions,
+        runtime_agent_config,
+    )
 
     return _build_batch_response(batch_id, jobs)
 
@@ -806,6 +971,20 @@ async def troubleshoot_document(
                     },
                 }
 
+        # Auto-apply the fix when the agent says it can be applied
+        if agent_analysis:
+            fix_plan = agent_analysis.get("fix_plan") or {}
+            if fix_plan.get("can_auto_apply") and fix_plan.get("parser_profile"):
+                profile_to_apply = fix_plan["parser_profile"]
+                if profile_to_apply in get_parser_profile_names():
+                    settings.default_parser_profile = profile_to_apply
+                    agent_hints = fix_plan.get("parser_hints")
+                    if isinstance(agent_hints, dict) and agent_hints:
+                        settings.parser_hint_overrides = agent_hints
+                    else:
+                        settings.parser_hint_overrides = {}
+                    fix_plan["auto_applied"] = True
+
         return TroubleshootResponse(
             filename=file.filename,
             file_type=suffix.lstrip("."),
@@ -823,14 +1002,23 @@ async def troubleshoot_document(
 
 @router.get("/jobs", response_model=JobListResponse)
 async def list_jobs(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all processing jobs."""
+    """List all processing jobs with pagination."""
+    # Get total count
+    count_result = await db.execute(select(sa_func.count()).select_from(ProcessingJob))
+    total = count_result.scalar() or 0
+
+    # Paginate
     result = await db.execute(
-        select(ProcessingJob).order_by(ProcessingJob.uploaded_at.desc())
+        select(ProcessingJob)
+        .order_by(ProcessingJob.uploaded_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     )
     jobs = result.scalars().all()
-    total = len(jobs)
     return JobListResponse(items=jobs, total=total)
 
 
@@ -967,6 +1155,7 @@ async def update_question_result(
     if not qr or qr.job_id != job_id:
         raise HTTPException(status_code=404, detail="Question result not found")
 
+    before = qr.edited_answer_text or qr.answer_text
     qr.edited_answer_text = body.answer_text
     qr.reviewed = True
 
@@ -974,6 +1163,15 @@ async def update_question_result(
     if job and job.review_status != "in_review":
         job.review_status = "in_review"
 
+    await log_audit(
+        db,
+        action_type="question_edit",
+        entity_type="question_result",
+        entity_id=question_id,
+        job_id=job_id,
+        before_value=before,
+        after_value=body.answer_text,
+    )
     await db.commit()
     await db.refresh(qr)
     return qr
@@ -991,6 +1189,13 @@ async def approve_question_result(
         raise HTTPException(status_code=404, detail="Question result not found")
 
     qr.reviewed = True
+    await log_audit(
+        db,
+        action_type="question_approve",
+        entity_type="question_result",
+        entity_id=question_id,
+        job_id=job_id,
+    )
     await db.commit()
     await db.refresh(qr)
     return qr
@@ -1012,6 +1217,14 @@ async def approve_all_question_results(job_id: int, db: AsyncSession = Depends(g
     items = result.scalars().all()
     for qr in items:
         qr.reviewed = True
+    await log_audit(
+        db,
+        action_type="bulk_approve",
+        entity_type="processing_job",
+        entity_id=job_id,
+        job_id=job_id,
+        details={"count": len(items)},
+    )
     await db.commit()
     return {"approved": len(items)}
 
@@ -1037,10 +1250,68 @@ async def finalize_job(job_id: int, db: AsyncSession = Depends(get_db)):
 
     rebuilt_items: list[ExtractedItem] = []
     total_edited = 0
+    corrections_captured = 0
+
+    from app.models import AnswerCorrection, QAPair
+    from app.utils.embeddings import compute_embedding, embedding_to_bytes
+
     for qr in question_results:
         final_answer = qr.edited_answer_text if qr.edited_answer_text else qr.answer_text
-        if qr.edited_answer_text:
+        if qr.edited_answer_text and qr.edited_answer_text != (qr.answer_text or ""):
             total_edited += 1
+
+            # Capture correction
+            correction = AnswerCorrection(
+                job_id=job_id,
+                question_result_id=qr.id,
+                question_text=qr.question_text,
+                original_answer=qr.answer_text,
+                corrected_answer=qr.edited_answer_text,
+                original_source=qr.source,
+                original_confidence=qr.confidence_score,
+                correction_type="manual",
+            )
+
+            # Auto-add to KB if enabled
+            if settings.feedback_auto_add_to_kb:
+                conf = qr.confidence_score or 0.0
+                if conf >= settings.feedback_min_confidence:
+                    normalized_q = qr.question_text.strip().lower()
+                    existing_result = await db.execute(
+                        select(QAPair).where(sa_func.lower(QAPair.question) == normalized_q).where(QAPair.deleted_at.is_(None))
+                    )
+                    existing_qa = existing_result.scalars().first()
+                    embedding = compute_embedding(qr.question_text)
+
+                    if existing_qa:
+                        existing_qa.answer = qr.edited_answer_text
+                        existing_qa.embedding = embedding_to_bytes(embedding)
+                        correction.kb_pair_id = existing_qa.id
+                    else:
+                        new_qa = QAPair(
+                            category="Auto-Learned",
+                            question=qr.question_text,
+                            answer=qr.edited_answer_text,
+                            embedding=embedding_to_bytes(embedding),
+                        )
+                        db.add(new_qa)
+                        await db.flush()
+                        correction.kb_pair_id = new_qa.id
+
+                    correction.auto_added_to_kb = True
+                    await log_audit(
+                        db,
+                        action_type="correction_auto_kb",
+                        entity_type="answer_correction",
+                        job_id=job_id,
+                        details={"question": qr.question_text[:100]},
+                    )
+
+            db.add(correction)
+            corrections_captured += 1
+        elif qr.edited_answer_text:
+            total_edited += 1
+
         rebuilt_items.append(ExtractedItem(
             question_text=qr.question_text,
             item_type=qr.item_type or "paragraph",
@@ -1063,6 +1334,18 @@ async def finalize_job(job_id: int, db: AsyncSession = Depends(get_db)):
 
     job.output_filename = output_name
     job.review_status = "finalized"
+    await log_audit(
+        db,
+        action_type="job_finalize",
+        entity_type="processing_job",
+        entity_id=job_id,
+        job_id=job_id,
+        details={
+            "total_edited": total_edited,
+            "corrections_captured": corrections_captured,
+            "output_filename": output_name,
+        },
+    )
     await db.commit()
 
     return FinalizeJobResponse(
@@ -1070,4 +1353,5 @@ async def finalize_job(job_id: int, db: AsyncSession = Depends(get_db)):
         review_status="finalized",
         output_filename=output_name,
         total_edited=total_edited,
+        corrections_captured=corrections_captured,
     )

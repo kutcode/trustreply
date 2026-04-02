@@ -6,12 +6,13 @@ import datetime
 import io
 from collections import OrderedDict
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
+from app.database import get_db, async_session
 from app.models import FlaggedQuestion, ProcessingJob, QAPair
+from app.services.duplicate_flag import check_and_flag_duplicates
 from app.schemas import (
     FlaggedQuestionResponse, FlaggedQuestionResolve,
     FlaggedQuestionListResponse,
@@ -22,8 +23,19 @@ from app.schemas import (
 from app.utils.embeddings import compute_embedding, embedding_to_bytes
 from app.utils.questions import clean_display_question, normalize_question_key
 from app.routers.qa import _require_category
+from app.services.audit import log_audit
 
 router = APIRouter(prefix="/api/flagged", tags=["flagged"])
+
+
+async def _run_duplicate_check_flagged(entry_ids: list[int]) -> None:
+    """Background task to check new KB entries (from flagged resolution) for duplicates."""
+    try:
+        async with async_session() as db:
+            await check_and_flag_duplicates(db, entry_ids)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Background duplicate check failed for entry_ids=%s", entry_ids)
 
 
 async def _load_duplicate_group(
@@ -34,14 +46,19 @@ async def _load_duplicate_group(
 ) -> list[FlaggedQuestion]:
     """Fetch flagged questions that normalize to the same prompt."""
 
-    result = await db.execute(select(FlaggedQuestion))
+    query = select(FlaggedQuestion).where(
+        FlaggedQuestion.extracted_question.isnot(None)
+    )
+    if resolved is not None:
+        query = query.where(FlaggedQuestion.resolved == resolved)
+
+    result = await db.execute(query)
     items = result.scalars().all()
 
     normalized = normalize_question_key(question_text)
     matches = [
         item for item in items
         if normalize_question_key(item.extracted_question) == normalized
-        and (resolved is None or item.resolved == resolved)
     ]
     return matches
 
@@ -124,7 +141,7 @@ async def _sync_unresolved_flagged_with_knowledge_base(
     unresolved_flags = unresolved_result.scalars().all()
 
     qa_result = await db.execute(
-        select(QAPair).order_by(QAPair.updated_at.desc(), QAPair.id.desc())
+        select(QAPair).where(QAPair.deleted_at.is_(None)).order_by(QAPair.updated_at.desc(), QAPair.id.desc())
     )
     qa_pairs = qa_result.scalars().all()
 
@@ -136,7 +153,7 @@ async def _sync_unresolved_flagged_with_knowledge_base(
 
     synced_occurrences = 0
     synced_groups: set[str] = set()
-    resolved_at = datetime.datetime.utcnow()
+    resolved_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
     for flagged_question in unresolved_flags:
         key = normalize_question_key(flagged_question.extracted_question)
@@ -289,6 +306,34 @@ async def deduplicate_flagged(
     }
 
 
+@router.delete("/dismissed")
+async def purge_dismissed(
+    db: AsyncSession = Depends(get_db),
+):
+    """Permanently delete all dismissed flagged question rows from the database."""
+    result = await db.execute(
+        select(FlaggedQuestion).where(FlaggedQuestion.resolved_answer == "[Dismissed]")
+    )
+    dismissed_items = result.scalars().all()
+
+    if not dismissed_items:
+        return {"purged": 0, "message": "No dismissed items to purge"}
+
+    count = len(dismissed_items)
+    for item in dismissed_items:
+        await db.delete(item)
+
+    await log_audit(
+        db,
+        action_type="flagged_bulk_dismiss",
+        entity_type="flagged_question",
+        details={"action": "purge_dismissed", "purged_count": count},
+    )
+    await db.commit()
+
+    return {"purged": count, "message": f"Permanently removed {count} dismissed flagged question(s)"}
+
+
 @router.get("/{flag_id}", response_model=FlaggedQuestionResponse)
 async def get_flagged(flag_id: int, db: AsyncSession = Depends(get_db)):
     """Get a single flagged question."""
@@ -317,6 +362,7 @@ async def get_flagged(flag_id: int, db: AsyncSession = Depends(get_db)):
 async def resolve_flagged(
     flag_id: int,
     data: FlaggedQuestionResolve,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """Resolve a flagged question by providing an answer.
@@ -330,7 +376,7 @@ async def resolve_flagged(
     if not duplicates:
         raise HTTPException(status_code=400, detail="Already resolved")
 
-    resolved_at = datetime.datetime.utcnow()
+    resolved_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     unique_questions = []
     seen_questions: set[str] = set()
     for duplicate in duplicates:
@@ -342,27 +388,64 @@ async def resolve_flagged(
             unique_questions.append(duplicate.extracted_question)
             seen_questions.add(duplicate.extracted_question)
 
-    # Optionally add to knowledge base
+    # Optionally add to knowledge base (upsert: update if same question exists)
+    new_kb_entry_ids: list[int] = []
+    newly_added_qa: list[QAPair] = []
     if data.add_to_knowledge_base:
         category = _require_category(data.category)
-        existing_result = await db.execute(select(QAPair.question))
-        existing_questions = {row[0] for row in existing_result.all()}
+        existing_result = await db.execute(select(QAPair).where(QAPair.deleted_at.is_(None)))
+        existing_map: dict[str, QAPair] = {}
+        for qa in existing_result.scalars().all():
+            if qa.question:
+                existing_map[qa.question.strip().lower()] = qa
 
         for question in unique_questions:
-            if question in existing_questions:
-                continue
-
+            normalized_q = question.strip().lower()
             embedding = compute_embedding(question)
-            qa = QAPair(
-                category=category,
-                question=question,
-                answer=data.answer,
-                embedding=embedding_to_bytes(embedding),
-            )
-            db.add(qa)
-            existing_questions.add(question)
 
+            if normalized_q in existing_map:
+                # Update existing KB entry
+                existing_qa = existing_map[normalized_q]
+                existing_qa.answer = data.answer
+                existing_qa.category = category
+                existing_qa.question = question
+                existing_qa.embedding = embedding_to_bytes(embedding)
+                new_kb_entry_ids.append(existing_qa.id)
+            else:
+                qa = QAPair(
+                    category=category,
+                    question=question,
+                    answer=data.answer,
+                    embedding=embedding_to_bytes(embedding),
+                )
+                db.add(qa)
+                newly_added_qa.append(qa)
+                existing_map[normalized_q] = qa
+
+    await log_audit(
+        db,
+        action_type="flagged_resolve",
+        entity_type="flagged_question",
+        entity_id=flag_id,
+        job_id=fq.job_id,
+        after_value=data.answer,
+        details={
+            "add_to_kb": data.add_to_knowledge_base,
+            "occurrence_count": len(duplicates),
+        },
+    )
+    # Flush to get IDs for newly added QAPair entries
+    if data.add_to_knowledge_base and newly_added_qa:
+        await db.flush()
+        for qa in newly_added_qa:
+            if qa.id:
+                new_kb_entry_ids.append(qa.id)
     await db.commit()
+
+    # Trigger background duplicate check for new KB entries
+    if new_kb_entry_ids:
+        background_tasks.add_task(_run_duplicate_check_flagged, new_kb_entry_ids)
+
     await db.refresh(fq)
     job_ids = sorted({duplicate.job_id for duplicate in duplicates})
     filenames = await _load_filenames_for_job_ids(db, job_ids)
@@ -396,12 +479,20 @@ async def dismiss_flagged(
     if not duplicates:
         raise HTTPException(status_code=400, detail="Already resolved")
 
-    dismissed_at = datetime.datetime.utcnow()
+    dismissed_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     for duplicate in duplicates:
         duplicate.resolved = True
         duplicate.resolved_at = dismissed_at
         duplicate.resolved_answer = "[Dismissed]"
 
+    await log_audit(
+        db,
+        action_type="flagged_dismiss",
+        entity_type="flagged_question",
+        entity_id=flag_id,
+        job_id=fq.job_id,
+        details={"occurrence_count": len(duplicates)},
+    )
     await db.commit()
     await db.refresh(fq)
     job_ids = sorted({duplicate.job_id for duplicate in duplicates})
@@ -439,7 +530,7 @@ async def dismiss_flagged_bulk(
     found_by_id = {item.id: item for item in found_items}
     not_found_ids = [item_id for item_id in unique_ids if item_id not in found_by_id]
 
-    dismissed_at = datetime.datetime.utcnow()
+    dismissed_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     dismissed_groups = 0
     dismissed_occurrences = 0
     already_resolved_groups = 0
@@ -469,6 +560,15 @@ async def dismiss_flagged_bulk(
         dismissed_occurrences += len(duplicates)
 
     if dismissed_occurrences > 0:
+        await log_audit(
+            db,
+            action_type="flagged_bulk_dismiss",
+            entity_type="flagged_question",
+            details={
+                "dismissed_groups": dismissed_groups,
+                "dismissed_occurrences": dismissed_occurrences,
+            },
+        )
         await db.commit()
 
     return FlaggedBulkDismissResponse(

@@ -9,9 +9,10 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import settings
+from app.config import settings, update_setting
+from app.middleware.auth import APIKeyMiddleware
 from app.database import init_db
-from app.routers import upload, qa, flagged
+from app.routers import upload, qa, flagged, audit, fingerprints, corrections, templates, presets
 from app.schemas import AgentModelsRequest, AgentModelsResponse, AppSettingsUpdate, TestConnectionResponse
 from app.services.agent import (
     AGENT_MODE_AGENT,
@@ -40,6 +41,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# API key auth (must be added before CORS so it runs after CORS in the middleware stack)
+app.add_middleware(APIKeyMiddleware)
+
 # CORS for frontend
 app.add_middleware(
     CORSMiddleware,
@@ -53,6 +57,11 @@ app.add_middleware(
 app.include_router(upload.router)
 app.include_router(qa.router)
 app.include_router(flagged.router)
+app.include_router(audit.router)
+app.include_router(fingerprints.router)
+app.include_router(corrections.router)
+app.include_router(templates.router)
+app.include_router(presets.router)
 
 
 @app.get("/api/health")
@@ -67,6 +76,7 @@ def _settings_response() -> dict:
         "similarity_threshold": settings.similarity_threshold,
         "embedding_model": settings.embedding_model,
         "default_parser_profile": settings.default_parser_profile,
+        "parser_hint_overrides": settings.parser_hint_overrides,
         "max_bulk_files": settings.max_bulk_files,
         "parser_profiles": get_parser_profiles(),
         "agent_enabled": settings.agent_enabled,
@@ -79,6 +89,10 @@ def _settings_response() -> dict:
         "agent_timeout_seconds": settings.agent_timeout_seconds,
         "agent_max_questions_per_call": settings.agent_max_questions_per_call,
         "agent_has_key": bool(settings.agent_api_key.strip()),
+        "agent_openai_has_key": bool(settings.agent_openai_api_key.strip()),
+        "agent_openai_model": settings.agent_openai_model,
+        "agent_anthropic_has_key": bool(settings.agent_anthropic_api_key.strip()),
+        "agent_anthropic_model": settings.agent_anthropic_model,
     }
 
 
@@ -120,7 +134,7 @@ def _openai_chat_candidate(model_id: str) -> bool:
         return False
     if any(model.startswith(prefix) for prefix in blocked_prefixes):
         return False
-    return model.startswith(("gpt", "o", "chatgpt"))
+    return model.startswith(("gpt", "o1", "o3", "o4", "chatgpt"))
 
 
 def _dedupe_model_options(options: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -209,6 +223,22 @@ async def _fetch_anthropic_models(api_base: str, api_key: str) -> list[dict[str,
     return _dedupe_model_options(options)
 
 
+def _resolve_provider_credentials(provider: str, body_api_base: str | None, body_api_key: str | None) -> tuple[str, str]:
+    """Resolve API base URL and key for a provider, using per-provider fallbacks."""
+
+    # Per-provider defaults
+    if provider == PROVIDER_ANTHROPIC:
+        default_base = "https://api.anthropic.com/v1"
+        default_key = settings.agent_anthropic_api_key or settings.agent_api_key or ""
+    else:  # openai
+        default_base = "https://api.openai.com/v1"
+        default_key = settings.agent_openai_api_key or settings.agent_api_key or ""
+
+    api_base = (body_api_base or default_base).strip()
+    api_key = (body_api_key or default_key).strip()
+    return api_base, api_key
+
+
 @app.post("/api/settings/models", response_model=AgentModelsResponse)
 async def list_agent_models(body: AgentModelsRequest):
     """Fetch provider model options for a UI dropdown."""
@@ -217,8 +247,7 @@ async def list_agent_models(body: AgentModelsRequest):
     if provider not in {PROVIDER_OPENAI, PROVIDER_ANTHROPIC}:
         raise HTTPException(status_code=400, detail="Unsupported provider. Allowed values: openai, anthropic.")
 
-    api_base = (body.api_base or settings.agent_api_base or "").strip()
-    api_key = (body.api_key or settings.agent_api_key or "").strip()
+    api_base, api_key = _resolve_provider_credentials(provider, body.api_base, body.api_key)
     if not api_base:
         raise HTTPException(status_code=400, detail="API base URL is required to load models.")
     if not api_key:
@@ -229,7 +258,7 @@ async def list_agent_models(body: AgentModelsRequest):
             models = await _fetch_anthropic_models(api_base, api_key)
         else:
             models = await _fetch_openai_models(api_base, api_key)
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, httpx.TimeoutException) as exc:
         raise HTTPException(status_code=400, detail=f"Failed to fetch provider models: {exc}") from exc
 
     if not models:
@@ -246,8 +275,7 @@ async def test_agent_connection(body: AgentModelsRequest):
     if provider not in {PROVIDER_OPENAI, PROVIDER_ANTHROPIC}:
         raise HTTPException(status_code=400, detail="Unsupported provider. Allowed values: openai, anthropic.")
 
-    api_base = (body.api_base or settings.agent_api_base or "").strip()
-    api_key = (body.api_key or settings.agent_api_key or "").strip()
+    api_base, api_key = _resolve_provider_credentials(provider, body.api_base, body.api_key)
     if not api_base:
         raise HTTPException(status_code=400, detail="API base URL is required.")
     if not api_key:
@@ -289,6 +317,10 @@ _FIELD_TO_ENV: dict[str, str] = {
     "agent_max_questions_per_call": "QF_AGENT_MAX_QUESTIONS_PER_CALL",
     "similarity_threshold": "QF_SIMILARITY_THRESHOLD",
     "default_parser_profile": "QF_DEFAULT_PARSER_PROFILE",
+    "agent_openai_api_key": "QF_AGENT_OPENAI_API_KEY",
+    "agent_openai_model": "QF_AGENT_OPENAI_MODEL",
+    "agent_anthropic_api_key": "QF_AGENT_ANTHROPIC_API_KEY",
+    "agent_anthropic_model": "QF_AGENT_ANTHROPIC_MODEL",
 }
 
 
@@ -318,8 +350,9 @@ def _persist_to_env_file(updates: dict[str, str]) -> None:
                 new_lines.append(f"{key}={value}")
 
         _ENV_FILE_PATH.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    except Exception:
-        pass  # Best-effort; in-memory update is the primary mechanism.
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to persist settings to .env: {e}")
 
 
 @app.put("/api/settings")
@@ -359,7 +392,7 @@ async def update_settings(body: AppSettingsUpdate):
     # Apply each provided field to the in-memory settings singleton.
     payload = body.model_dump(exclude_none=True)
     for field_name, value in payload.items():
-        setattr(settings, field_name, value)
+        update_setting(field_name, value)
         env_key = _FIELD_TO_ENV.get(field_name)
         if env_key:
             env_updates[env_key] = str(value).lower() if isinstance(value, bool) else str(value)
@@ -368,7 +401,7 @@ async def update_settings(body: AppSettingsUpdate):
         _persist_to_env_file(env_updates)
 
     # Keep default mode pinned to agent for all future uploads unless caller overrides per-request.
-    settings.agent_default_mode = AGENT_MODE_AGENT
+    update_setting("agent_default_mode", AGENT_MODE_AGENT)
     _persist_to_env_file({"QF_AGENT_DEFAULT_MODE": AGENT_MODE_AGENT})
 
     return _settings_response()
