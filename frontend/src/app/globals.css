@@ -29,7 +29,19 @@
   --info-bg: rgba(59, 130, 246, 0.1);
 
   --border: rgba(139, 147, 167, 0.15);
+  --border-color: rgba(139, 147, 167, 0.15);
   --border-hover: rgba(139, 147, 167, 0.3);
+
+  /* Semantic color aliases */
+  --color-success: #10b981;
+  --color-danger: #ef4444;
+  --color-warning: #f59e0b;
+  --color-info: #3b82f6;
+  --color-tertiary: #6b7280;
+
+  /* Surface variants */
+  --surface-alt: #1a1f2e;
+  --bg-hover: #222845;
 
   /* Typography */
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -556,9 +568,9 @@ a:hover {
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 1rem;
-  margin-bottom: 2rem;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
 }
 
 .stat-card {
@@ -576,7 +588,7 @@ a:hover {
 }
 
 .stat-value {
-  font-size: 2rem;
+  font-size: 1.6rem;
   font-weight: 800;
   background: var(--accent-gradient);
   -webkit-background-clip: text;
@@ -611,6 +623,49 @@ a:hover {
   font-weight: 600;
   color: var(--text-secondary);
   margin-bottom: 0.5rem;
+}
+
+/* ── Sub-Tabs ───────────────────────────────────────────────────── */
+
+.sub-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 1.75rem;
+  border-bottom: 2px solid var(--border);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.sub-tab {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.65rem 1.15rem;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 0.92rem;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+  white-space: nowrap;
+  font-family: inherit;
+}
+
+.sub-tab:hover {
+  color: var(--text-secondary);
+}
+
+.sub-tab-active {
+  color: var(--accent-primary);
+  font-weight: 700;
+  border-bottom-color: var(--accent-primary);
+}
+
+.sub-tab-icon {
+  font-size: 0.95rem;
 }
 
 /* ── Pagination ──────────────────────────────────────────────────── */
@@ -772,6 +827,28 @@ a:hover {
 .job-item-actions {
   display: flex;
   gap: 0.5rem;
+}
+
+.job-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  margin-bottom: 1rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.job-detail-meta span {
+  white-space: nowrap;
+}
+
+.job-detail-meta strong {
+  color: var(--text-secondary);
+  font-weight: 600;
 }
 
 /* ── Animations ──────────────────────────────────────────────────── */
@@ -1294,4 +1371,35 @@ a:hover {
   display: flex;
   gap: 0.4rem;
   margin-top: 0.4rem;
+}
+
+/* ── Loading Skeletons ──────────────────────────────────────────── */
+
+.skeleton-line {
+  height: 1rem;
+  background: linear-gradient(90deg, var(--bg-card) 25%, var(--bg-card-hover) 50%, var(--bg-card) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+  border-radius: var(--radius-sm);
+  margin-bottom: 0.75rem;
+}
+.skeleton-line:nth-child(odd) { width: 85%; }
+.skeleton-line:nth-child(even) { width: 65%; }
+.skeleton-header {
+  height: 1.5rem;
+  width: 40%;
+  margin-bottom: 1.25rem;
+}
+@keyframes skeleton-pulse {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── Table Responsive ───────────────────────────────────────────── */
+
+.table-responsive {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0 -0.25rem;
+  padding: 0 0.25rem;
 }

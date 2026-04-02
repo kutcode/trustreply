@@ -1,5 +1,7 @@
 import './globals.css';
 import Navbar from '@/components/Navbar';
+import ErrorBoundary from '@/components/ErrorBoundary';
+import AuthProvider from '@/components/AuthProvider';
 
 export const metadata = {
   title: 'TrustReply — Questionnaire Response Automation',
@@ -19,11 +21,13 @@ export default function RootLayout({ children }) {
         />
       </head>
       <body>
+        <AuthProvider>
         <Navbar />
-        <main>{children}</main>
+        <main><ErrorBoundary>{children}</ErrorBoundary></main>
         <footer className="app-footer">
           Built with TrustReply &mdash; Questionnaire Response Automation
         </footer>
+        </AuthProvider>
       </body>
     </html>
   );

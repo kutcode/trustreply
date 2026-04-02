@@ -3,14 +3,21 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
+import UserMenu from './UserMenu';
 
 const NAV_LINKS = [
     { href: '/', label: 'Upload', icon: '↑' },
     { href: '/admin', label: 'Knowledge Base', icon: '📚' },
-    { href: '/admin/flagged', label: 'Flagged', icon: '⚑' },
+    { href: '/admin/templates', label: 'Templates', icon: '📋' },
     { href: '/troubleshoot', label: 'Troubleshoot', icon: '🛠' },
     { href: '/settings', label: 'Settings', icon: '⚙' },
 ];
+
+function isActive(href, pathname) {
+    if (href === '/') return pathname === '/';
+    if (href === '/admin') return pathname === '/admin';
+    return pathname.startsWith(href);
+}
 
 export default function Navbar() {
     const pathname = usePathname();
@@ -38,7 +45,7 @@ export default function Navbar() {
                     <Link
                         key={link.href}
                         href={link.href}
-                        className={pathname === link.href ? 'active' : ''}
+                        className={isActive(link.href, pathname) ? 'active' : ''}
                         onClick={() => setMenuOpen(false)}
                     >
                         <span className="nav-icon">{link.icon}</span>{' '}
@@ -46,6 +53,7 @@ export default function Navbar() {
                     </Link>
                 ))}
             </div>
+            <UserMenu />
         </nav>
     );
 }
