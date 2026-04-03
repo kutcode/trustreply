@@ -2,7 +2,6 @@
 
 import datetime
 
-import pytest
 import pytest_asyncio
 from app.models import FlaggedQuestion, QAPair
 from app.services.parser import ExtractedItem

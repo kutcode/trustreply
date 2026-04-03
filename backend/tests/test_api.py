@@ -1,11 +1,9 @@
 """API integration tests."""
 
 import csv
-import pytest
 import io
 import json
 import zipfile
-from pathlib import Path
 from docx import Document as DocxDocument
 
 from app.config import settings

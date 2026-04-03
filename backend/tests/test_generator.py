@@ -1,9 +1,8 @@
 """Tests for the document generator module."""
 
-from pathlib import Path
 from docx import Document as DocxDocument
 
-from app.services.parser import ExtractedItem, RunFormat
+from app.services.parser import ExtractedItem
 from app.services.generator import generate_filled_csv, generate_filled_docx, generate_docx_from_pdf_items
 from app.utils.questions import REVIEW_REQUIRED_PLACEHOLDER
 

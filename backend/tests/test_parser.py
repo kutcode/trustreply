@@ -1,7 +1,6 @@
 """Tests for the document parser module."""
 
 import pytest
-from pathlib import Path
 from docx import Document as DocxDocument
 
 from app.services.parser import (
