@@ -29,6 +29,11 @@ export default function AgentLearningContent() {
     const [toast, setToast] = useState(null);
 
     const toastTimeout = useRef(null);
+    useEffect(() => {
+        return () => {
+            if (toastTimeout.current) clearTimeout(toastTimeout.current);
+        };
+    }, []);
     const showToast = useCallback((msg, type = 'info') => {
         if (toastTimeout.current) clearTimeout(toastTimeout.current);
         setToast({ message: msg, type });

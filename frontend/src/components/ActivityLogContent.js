@@ -40,6 +40,11 @@ export default function ActivityLogContent() {
     const [expandedId, setExpandedId] = useState(null);
 
     const toastTimeout = useRef(null);
+    useEffect(() => {
+        return () => {
+            if (toastTimeout.current) clearTimeout(toastTimeout.current);
+        };
+    }, []);
     const showToast = useCallback((msg, type = 'info') => {
         if (toastTimeout.current) clearTimeout(toastTimeout.current);
         setToast({ message: msg, type });

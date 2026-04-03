@@ -60,6 +60,11 @@ export default function TroubleshootPage() {
     const aiFixPlan = expandedResult?.agent_analysis?.fix_plan || null;
 
     const toastTimeout = useRef(null);
+    useEffect(() => {
+        return () => {
+            if (toastTimeout.current) clearTimeout(toastTimeout.current);
+        };
+    }, []);
     const showToast = (msg, type = 'info') => {
         if (toastTimeout.current) clearTimeout(toastTimeout.current);
         setToast({ message: msg, type });

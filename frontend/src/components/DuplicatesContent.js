@@ -438,6 +438,11 @@ export default function DuplicatesContent() {
     const [activeTab, setActiveTab] = useState('review');
     const [toast, setToast] = useState(null);
     const toastTimeout = useRef(null);
+    useEffect(() => {
+        return () => {
+            if (toastTimeout.current) clearTimeout(toastTimeout.current);
+        };
+    }, []);
     const showToast = useCallback((msg, type = 'info') => {
         if (toastTimeout.current) clearTimeout(toastTimeout.current);
         setToast({ message: msg, type });

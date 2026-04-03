@@ -95,8 +95,14 @@ export default function UploadPage() {
   const [selectedProvider, setSelectedProvider] = useState(null);
   const pollRef = useRef(null);
   const thinkingRef = useRef(null);
+  const pollingInFlight = useRef(false);
 
   const toastTimeout = useRef(null);
+  useEffect(() => {
+    return () => {
+      if (toastTimeout.current) clearTimeout(toastTimeout.current);
+    };
+  }, []);
   const showToast = useCallback((msg, type = 'info') => {
     if (toastTimeout.current) clearTimeout(toastTimeout.current);
     setToast({ message: msg, type });
@@ -207,6 +213,8 @@ export default function UploadPage() {
   }, []);
 
   const pollJob = useCallback(async (jobId) => {
+    if (pollingInFlight.current) return;
+    pollingInFlight.current = true;
     try {
       const job = await getJob(jobId);
       setCurrentJob(job);
@@ -229,10 +237,14 @@ export default function UploadPage() {
       }
     } catch (err) {
       stopPolling();
+    } finally {
+      pollingInFlight.current = false;
     }
   }, [refreshJobs, showToast, stopPolling]);
 
   const pollBatch = useCallback(async (batchId) => {
+    if (pollingInFlight.current) return;
+    pollingInFlight.current = true;
     try {
       const batch = await getBatchJobs(batchId);
       setCurrentBatch(batch);
@@ -254,6 +266,8 @@ export default function UploadPage() {
       }
     } catch (err) {
       stopPolling();
+    } finally {
+      pollingInFlight.current = false;
     }
   }, [refreshJobs, showToast, stopPolling]);
 
