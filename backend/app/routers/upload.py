@@ -3,6 +3,7 @@
 from __future__ import annotations
 import asyncio
 import datetime
+import logging
 import uuid
 import zipfile
 from pathlib import Path
@@ -42,6 +43,8 @@ from app.services.agent import (
 from app.services.audit import log_audit
 from app.services.fingerprint import find_matching_fingerprint, save_fingerprint
 from app.utils.questions import normalize_question_key
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["upload"])
 
@@ -706,8 +709,8 @@ async def _process_document(
                         original_filename=job.original_filename,
                         db=db,
                     )
-                except Exception:
-                    pass  # best-effort
+                except Exception as e:
+                    logger.warning("Failed to save format fingerprint: %s", e)
 
             await db.commit()
 

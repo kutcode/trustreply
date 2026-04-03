@@ -293,11 +293,15 @@ async def deduplicate_flagged(
         else:
             seen[key] = fq.id
 
-    if to_delete:
-        await db.execute(
-            FlaggedQuestion.__table__.delete().where(FlaggedQuestion.id.in_(to_delete))
-        )
-        await db.commit()
+    try:
+        if to_delete:
+            await db.execute(
+                FlaggedQuestion.__table__.delete().where(FlaggedQuestion.id.in_(to_delete))
+            )
+            await db.commit()
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Deduplication failed: {str(e)}")
 
     return {
         "total_before": len(all_flags),
@@ -320,16 +324,20 @@ async def purge_dismissed(
         return {"purged": 0, "message": "No dismissed items to purge"}
 
     count = len(dismissed_items)
-    for item in dismissed_items:
-        await db.delete(item)
+    try:
+        for item in dismissed_items:
+            await db.delete(item)
 
-    await log_audit(
-        db,
-        action_type="flagged_bulk_dismiss",
-        entity_type="flagged_question",
-        details={"action": "purge_dismissed", "purged_count": count},
-    )
-    await db.commit()
+        await log_audit(
+            db,
+            action_type="flagged_bulk_dismiss",
+            entity_type="flagged_question",
+            details={"action": "purge_dismissed", "purged_count": count},
+        )
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Purge failed: {str(e)}")
 
     return {"purged": count, "message": f"Permanently removed {count} dismissed flagged question(s)"}
 
