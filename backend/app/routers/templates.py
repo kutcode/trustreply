@@ -135,6 +135,8 @@ async def get_template(template_id: int, db: AsyncSession = Depends(get_db)):
     template = await db.get(QuestionnaireTemplate, template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
+    if template.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Template not found")
 
     result = await db.execute(
         select(TemplateAnswer)
@@ -168,6 +170,8 @@ async def update_template(
     template = await db.get(QuestionnaireTemplate, template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
+    if template.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Template not found")
 
     if body.name is not None:
         template.name = body.name.strip()
@@ -195,6 +199,8 @@ async def delete_template(
     template = await db.get(QuestionnaireTemplate, template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
+    if template.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Template not found")
 
     await log_audit(
         db,
@@ -218,6 +224,8 @@ async def list_template_answers(
 
     template = await db.get(QuestionnaireTemplate, template_id)
     if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    if template.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Template not found")
 
     result = await db.execute(
@@ -253,6 +261,8 @@ async def update_template_answer(
 
     template = await db.get(QuestionnaireTemplate, template_id)
     if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    if template.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Template not found")
 
     answer = await db.get(TemplateAnswer, answer_id)

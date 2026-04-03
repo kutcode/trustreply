@@ -241,6 +241,8 @@ async def create_qa_pair(
         background_tasks.add_task(_run_duplicate_check, [existing.id])
         return existing
 
+    # NOTE: There is a small race window between the duplicate check and the insert.
+    # A DB-level unique constraint on (question, deleted_at) would fully close this gap.
     qa = QAPair(
         category=category,
         question=data.question,
@@ -286,7 +288,7 @@ def _union(parent: list[int], rank: list[int], i: int, j: int) -> None:
 
 @router.get("/duplicates", response_model=DuplicateDetectionResponse)
 async def detect_duplicates(
-    threshold: float = Query(0.85, ge=0.0, le=1.0, description="Cosine similarity threshold"),
+    threshold: float = Query(default=settings.semantic_dedup_threshold, ge=0.0, le=1.0, description="Cosine similarity threshold"),
     category: str | None = Query(None, description="Optional category filter"),
     db: AsyncSession = Depends(get_db),
 ):
@@ -816,7 +818,9 @@ async def update_qa_pair(
     """Update an existing Q&A pair."""
     qa = await db.get(QAPair, qa_id)
     if not qa:
-        raise HTTPException(status_code=404, detail="Q&A pair not found")
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if qa.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Entry not found")
 
     before_answer = qa.answer
     if data.category is not None:
@@ -852,7 +856,9 @@ async def delete_qa_pair(
     """Delete a Q&A pair."""
     qa = await db.get(QAPair, qa_id)
     if not qa:
-        raise HTTPException(status_code=404, detail="Q&A pair not found")
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if qa.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Entry already deleted")
 
     await log_audit(
         db,
@@ -921,106 +927,111 @@ async def import_qa_pairs(
     if not valid_records:
         return {"imported": 0, "errors": errors, "duplicates": 0, "duplicate_questions": [], "total_rows": len(records)}
 
-    # Load existing KB entries keyed by normalized question for upsert
-    existing_result = await db.execute(select(QAPair).where(QAPair.deleted_at.is_(None)))
-    existing_entries = existing_result.scalars().all()
-    existing_map: dict[str, QAPair] = {}
-    for qa in existing_entries:
-        if qa.question:
-            existing_map[qa.question.strip().lower()] = qa
+    try:
+        # Load existing KB entries keyed by normalized question for upsert
+        existing_result = await db.execute(select(QAPair).where(QAPair.deleted_at.is_(None)))
+        existing_entries = existing_result.scalars().all()
+        existing_map: dict[str, QAPair] = {}
+        for qa in existing_entries:
+            if qa.question:
+                existing_map[qa.question.strip().lower()] = qa
 
-    # Build embedding matrix for semantic dedup against existing KB
-    existing_with_embeddings = [qa for qa in existing_entries if qa.embedding is not None]
-    stored_embeddings = (
-        np.array([bytes_to_embedding(qa.embedding) for qa in existing_with_embeddings])
-        if existing_with_embeddings else None
-    )
+        # Build embedding matrix for semantic dedup against existing KB
+        existing_with_embeddings = [qa for qa in existing_entries if qa.embedding is not None]
+        stored_embeddings = (
+            np.array([bytes_to_embedding(qa.embedding) for qa in existing_with_embeddings])
+            if existing_with_embeddings else None
+        )
 
-    new_records = []
-    updated_records = []  # (question, answer, category, existing_qa)
-    seen_in_import: set[str] = set()
-    semantic_merges = 0
+        new_records = []
+        updated_records = []  # (question, answer, category, existing_qa)
+        seen_in_import: set[str] = set()
+        semantic_merges = 0
 
-    for question, answer, category in valid_records:
-        normalized_q = question.strip().lower()
-        # Skip duplicates within the same import file
-        if normalized_q in seen_in_import:
-            continue
-        seen_in_import.add(normalized_q)
+        for question, answer, category in valid_records:
+            normalized_q = question.strip().lower()
+            # Skip duplicates within the same import file
+            if normalized_q in seen_in_import:
+                continue
+            seen_in_import.add(normalized_q)
 
-        if normalized_q in existing_map:
-            # Exact text match — update existing
-            updated_records.append((question, answer, category, existing_map[normalized_q]))
-        else:
-            new_records.append((question, answer, category))
-
-    # Batch compute embeddings for ALL unique questions (new + updated) in one call.
-    # Use a dict to look up embeddings by question text later — avoids fragile index math.
-    all_unique_questions = [q for q, a, c in new_records] + [q for q, a, c, _ in updated_records]
-    embedding_map: dict[str, np.ndarray] = {}
-    if all_unique_questions:
-        all_embeddings = compute_embeddings(all_unique_questions)
-        for q_text, emb in zip(all_unique_questions, all_embeddings):
-            embedding_map[q_text] = emb
-
-    # Semantic dedup: check new records against existing KB embeddings.
-    # Move semantically-matched records from new → updated.
-    if stored_embeddings is not None and new_records:
-        truly_new: list[tuple[str, str, str]] = []
-        for question, answer, category in new_records:
-            emb = embedding_map[question]
-            similarities = stored_embeddings @ emb
-            best_idx = int(np.argmax(similarities))
-            best_sim = float(similarities[best_idx])
-
-            if best_sim >= settings.semantic_dedup_threshold:
-                match = existing_with_embeddings[best_idx]
-                updated_records.append((question, answer, category, match))
-                semantic_merges += 1
+            if normalized_q in existing_map:
+                # Exact text match — update existing
+                updated_records.append((question, answer, category, existing_map[normalized_q]))
             else:
-                truly_new.append((question, answer, category))
-        new_records = truly_new
+                new_records.append((question, answer, category))
 
-    new_qa_objects: list[QAPair] = []
-    for question, answer, category in new_records:
-        qa = QAPair(
-            category=category,
-            question=question,
-            answer=answer,
-            embedding=embedding_to_bytes(embedding_map[question]),
-        )
-        db.add(qa)
-        new_qa_objects.append(qa)
+        # Batch compute embeddings for ALL unique questions (new + updated) in one call.
+        # Use a dict to look up embeddings by question text later — avoids fragile index math.
+        all_unique_questions = [q for q, a, c in new_records] + [q for q, a, c, _ in updated_records]
+        embedding_map: dict[str, np.ndarray] = {}
+        if all_unique_questions:
+            all_embeddings = compute_embeddings(all_unique_questions)
+            for q_text, emb in zip(all_unique_questions, all_embeddings):
+                embedding_map[q_text] = emb
 
-    for question, answer, category, existing_qa in updated_records:
-        existing_qa.answer = answer
-        existing_qa.category = category
-        if len(question.strip()) > len((existing_qa.question or "").strip()):
-            existing_qa.question = question
-        existing_qa.embedding = embedding_to_bytes(embedding_map[question])
+        # Semantic dedup: check new records against existing KB embeddings.
+        # Move semantically-matched records from new → updated.
+        if stored_embeddings is not None and new_records:
+            truly_new: list[tuple[str, str, str]] = []
+            for question, answer, category in new_records:
+                emb = embedding_map[question]
+                similarities = stored_embeddings @ emb
+                best_idx = int(np.argmax(similarities))
+                best_sim = float(similarities[best_idx])
 
-    if new_records or updated_records:
-        await log_audit(
-            db,
-            action_type="kb_import",
-            entity_type="qa_pair",
-            details={
-                "imported": len(new_records),
-                "updated": len(updated_records),
-                "semantic_merges": semantic_merges,
-                "skipped": len(records) - len(valid_records),
-                "filename": filename,
-            },
-        )
-        await db.flush()  # Get IDs for new records
-        new_entry_ids = [qa.id for qa in new_qa_objects if qa.id]
-        # Also include updated records for duplicate checking
-        updated_entry_ids = [existing_qa.id for _, _, _, existing_qa in updated_records if existing_qa.id]
-        all_entry_ids = new_entry_ids + updated_entry_ids
-        await db.commit()
+                if best_sim >= settings.semantic_dedup_threshold:
+                    match = existing_with_embeddings[best_idx]
+                    updated_records.append((question, answer, category, match))
+                    semantic_merges += 1
+                else:
+                    truly_new.append((question, answer, category))
+            new_records = truly_new
 
-        if all_entry_ids and background_tasks is not None:
-            background_tasks.add_task(_run_duplicate_check, all_entry_ids)
+        new_qa_objects: list[QAPair] = []
+        for question, answer, category in new_records:
+            qa = QAPair(
+                category=category,
+                question=question,
+                answer=answer,
+                embedding=embedding_to_bytes(embedding_map[question]),
+            )
+            db.add(qa)
+            new_qa_objects.append(qa)
+
+        for question, answer, category, existing_qa in updated_records:
+            existing_qa.answer = answer
+            existing_qa.category = category
+            if len(question.strip()) > len((existing_qa.question or "").strip()):
+                existing_qa.question = question
+            existing_qa.embedding = embedding_to_bytes(embedding_map[question])
+
+        if new_records or updated_records:
+            await log_audit(
+                db,
+                action_type="kb_import",
+                entity_type="qa_pair",
+                details={
+                    "imported": len(new_records),
+                    "updated": len(updated_records),
+                    "semantic_merges": semantic_merges,
+                    "skipped": len(records) - len(valid_records),
+                    "filename": filename,
+                },
+            )
+            await db.flush()  # Get IDs for new records
+            new_entry_ids = [qa.id for qa in new_qa_objects if qa.id]
+            # Also include updated records for duplicate checking
+            updated_entry_ids = [existing_qa.id for _, _, _, existing_qa in updated_records if existing_qa.id]
+            all_entry_ids = new_entry_ids + updated_entry_ids
+            await db.commit()
+
+            if all_entry_ids and background_tasks is not None:
+                background_tasks.add_task(_run_duplicate_check, all_entry_ids)
+    except HTTPException:
+        raise  # re-raise HTTP exceptions as-is
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Import failed: {str(e)}")
 
     return {
         "imported": len(new_records),

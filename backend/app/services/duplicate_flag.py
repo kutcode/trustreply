@@ -8,6 +8,7 @@ import numpy as np
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models import QAPair, DuplicateReview
 from app.utils.embeddings import bytes_to_embedding
 
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 async def check_and_flag_duplicates(
     db: AsyncSession,
     new_entry_ids: list[int],
-    threshold: float = 0.85,
+    threshold: float = settings.semantic_dedup_threshold,
 ) -> int:
     """Check newly added KB entries against existing entries for near-duplicates.
 
