@@ -133,6 +133,17 @@ class FlaggedSyncResponse(BaseModel):
 
 # ── Question Results (Review Queue) ──────────────────────────────────
 
+class SourceKBPair(BaseModel):
+    """Lightweight KB entry attached to a question result for source traceability."""
+    id: int
+    question: str
+    answer: str
+    category: str | None = None
+
+    class Config:
+        from_attributes = True
+
+
 class QuestionResultResponse(BaseModel):
     id: int
     job_id: int
@@ -143,6 +154,7 @@ class QuestionResultResponse(BaseModel):
     confidence_score: float | None
     source: str | None
     kb_pair_id: int | None
+    source_kb: SourceKBPair | None = None
     location_info: dict | None
     item_type: str | None
     reviewed: bool

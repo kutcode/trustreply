@@ -1126,7 +1126,7 @@ async def download_result(job_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.get("/jobs/{job_id}/questions", response_model=QuestionResultListResponse)
 async def list_question_results(job_id: int, db: AsyncSession = Depends(get_db)):
-    """List all per-question results for a completed job."""
+    """List all per-question results for a completed job, with source KB traceability."""
     job = await db.get(ProcessingJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -1137,9 +1137,50 @@ async def list_question_results(job_id: int, db: AsyncSession = Depends(get_db))
         .order_by(QuestionResult.question_index.asc())
     )
     items = result.scalars().all()
+
+    # Batch-fetch all referenced KB pairs (source traceability)
+    kb_ids = {q.kb_pair_id for q in items if q.kb_pair_id}
+    kb_lookup: dict[int, "QAPair"] = {}
+    if kb_ids:
+        from app.models import QAPair as _QAPair  # local import to avoid cycle
+        kb_result = await db.execute(
+            select(_QAPair).where(_QAPair.id.in_(kb_ids))
+        )
+        kb_lookup = {kb.id: kb for kb in kb_result.scalars().all()}
+
+    payload_items = []
+    for q in items:
+        data = {
+            "id": q.id,
+            "job_id": q.job_id,
+            "question_index": q.question_index,
+            "question_text": q.question_text,
+            "answer_text": q.answer_text,
+            "edited_answer_text": q.edited_answer_text,
+            "confidence_score": q.confidence_score,
+            "source": q.source,
+            "kb_pair_id": q.kb_pair_id,
+            "source_kb": None,
+            "location_info": q.location_info,
+            "item_type": q.item_type,
+            "reviewed": q.reviewed,
+            "agent_reason": q.agent_reason,
+            "agent_issues": q.agent_issues,
+            "created_at": q.created_at,
+        }
+        kb = kb_lookup.get(q.kb_pair_id) if q.kb_pair_id else None
+        if kb is not None:
+            data["source_kb"] = {
+                "id": kb.id,
+                "question": kb.question,
+                "answer": kb.answer,
+                "category": kb.category,
+            }
+        payload_items.append(data)
+
     reviewed_count = sum(1 for q in items if q.reviewed)
     return QuestionResultListResponse(
-        items=items,
+        items=payload_items,
         total=len(items),
         reviewed_count=reviewed_count,
         unreviewed_count=len(items) - reviewed_count,

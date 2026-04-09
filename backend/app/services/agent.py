@@ -572,6 +572,7 @@ async def _build_candidate_map(
             qa = qa_pairs[int(ranked_idx)]
             candidates.append(
                 {
+                    "id": qa.id,
                     "category": qa.category,
                     "question": qa.question,
                     "answer": qa.answer,
@@ -916,6 +917,7 @@ async def run_contextual_fill_agent(
             kb_answer = candidates[0]["answer"]
             items[item_index].answer_text = kb_answer
             items[item_index].matched_source = "kb_direct"
+            items[item_index].matched_qa_id = candidates[0].get("id")
             items[item_index].confidence = top_sim
 
             decision_payload = {
