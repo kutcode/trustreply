@@ -11,22 +11,26 @@ The product approach is:
 - reuse trusted answers from a curated knowledge base
 - fill documents automatically where confidence is high
 - flag missing or uncertain questions for review
+- detect contradictions and duplicates in your knowledge base
+- route flagged questions to the right subject-matter experts
 - learn from resolved questions over time
 
 ## What It Does
 
-- Upload `.docx`, `.pdf`, and `.csv` questionnaires
-- Parse tables, row-block layouts, paragraphs, CSV grids, and several document profile variants
+- Upload `.docx`, `.pdf`, `.xlsx`, and `.csv` questionnaires
+- Parse tables, row-block layouts, paragraphs, Excel worksheets, CSV grids, and several document profile variants
 - Match questions against a Q&A knowledge base using sentence-transformer embeddings
-- Optionally run a two-stage AI agent workflow (Research Agent + Fill Agent) for context-aware answers
-- Write answers back into supported documents while preserving formatting where possible
+- Optionally run a two-stage agent workflow (Research Agent + Fill Agent) for context-aware answers
+- Write answers back into supported documents while preserving formatting (including Excel dropdowns, merged cells, and styles)
+- Track answer sources with full traceability back to the originating KB entry
+- Detect contradictions between knowledge-base entries automatically
+- Route flagged questions to subject-matter experts by category
 - Group repeated flagged questions so teams answer them once instead of many times
 - Export unresolved flagged questions as a simple `category,question,answer` CSV
 - Import completed CSVs back into the knowledge base
 - Sync flagged questions against newly imported knowledge-base answers
 - Run bulk uploads with batch summaries and downloadable batch ZIP outputs
 - Troubleshoot difficult files by comparing parser profiles before retrying
-- Run optional AI troubleshooting analysis with root-cause hints and trace logs
 
 ## Primary Use Cases
 
@@ -39,33 +43,35 @@ TrustReply is useful anywhere a team repeatedly answers structured questionnaire
 - Procurement and due-diligence packets
 - Internal operations and compliance forms
 
-More examples are documented in [docs/USE_CASES.md](/Users/kutluhanbayram/Desktop/AI%20QUESTIONNAIRE%20FILLER%20-%20DOCS/docs/USE_CASES.md).
+More examples are documented in [docs/USE_CASES.md](docs/USE_CASES.md).
 
 ## Product Workflow
 
 1. Add approved Q&A pairs to the Knowledge Base.
-2. Upload one file or a batch of questionnaire documents or CSV questionnaires.
+2. Upload one file or a batch of questionnaire documents (.docx, .pdf, .xlsx, or .csv).
 3. TrustReply parses the document and matches questions to known answers.
 4. Optional agent mode can research context, fill unresolved answers, and flag uncertain prompts.
-5. Review auto-filled answers in the inline review queue with confidence scores.
+5. Review auto-filled answers in the inline review queue with confidence scores and source traceability.
 6. Edit or approve answers, then finalize and download the completed document.
-7. Unresolved questions are grouped in the Flagged Questions queue.
+7. Unresolved questions are grouped in the Flagged Questions queue, with optional SME routing.
 8. Export missing questions as CSV, fill in answers, and re-import them.
 9. Sync flagged questions with the updated knowledge base.
 
 ## Key Features
 
-- **Knowledge Base Management**: CRUD, categories, search, CSV/JSON import/export, duplicate detection
+- **Knowledge Base Management**: CRUD, categories, search, CSV/JSON import/export, duplicate detection, contradiction detection
 - **Semantic Matching**: embedding-based question matching for paraphrased prompts
+- **Source Traceability**: every answer links back to the KB entry it was matched from, with category, similarity score, and source Q&A visible in review
+- **Contradiction Detection**: automatically flags KB entries with conflicting answers on the same topic
+- **SME Routing**: route flagged questions to category-specific subject-matter experts via configurable email mappings
 - **Confidence Score Visibility**: per-answer confidence badges (green/yellow/red) so reviewers focus on low-confidence answers
-- **Answer Review Queue**: inline review table after processing — approve, edit, or override any answer before downloading
+- **Answer Review Queue**: inline review table after processing -- approve, edit, or override any answer before downloading
 - **Finalize & Download**: regenerate the output document with edited answers after review
-- **AI Agent Mode**: default `agent` mode with contextual research/fill workflows
-- **Provider Model Discovery**: Settings can pull model dropdown options directly from OpenAI and Claude APIs
-- **Test Connection**: verify AI provider credentials from the Settings page
+- **Excel Support**: full .xlsx round-trip -- parse questions from Excel workbooks and write answers back preserving dropdowns, merged cells, data validation, and cell styles
+- **Agent Mode**: optional agent mode with contextual research/fill workflows
 - **Agent Instruction Presets**: built-in and custom instruction presets for common answering styles
-- **Parser Profiles**: multiple layout strategies for document and CSV questionnaire structures
-- **Troubleshooting**: compare parser profiles plus optional AI diagnostics and trace output
+- **Parser Profiles**: multiple layout strategies for document, Excel, and CSV questionnaire structures
+- **Troubleshooting**: compare parser profiles plus optional advanced diagnostics and trace output
 - **Human-in-the-loop Review**: grouped flagged questions, resolution flow, and KB sync
 - **Batch Processing**: upload up to 50 files in one batch, track per-file results, and download ZIP outputs
 - **Confirmation Dialogs**: styled confirmation modals for destructive actions (delete, bulk dismiss)
@@ -77,18 +83,19 @@ More examples are documented in [docs/USE_CASES.md](/Users/kutluhanbayram/Deskto
 |---|---|
 | Frontend | Next.js / React |
 | Backend | FastAPI |
-| Database | SQLite + SQLAlchemy |
-| Document Parsing | `python-docx`, `pdfplumber` |
+| Database | PostgreSQL (Supabase) or SQLite |
+| Document Parsing | `python-docx`, `pdfplumber`, `openpyxl` |
 | Semantic Matching | `sentence-transformers` (`all-MiniLM-L6-v2`) |
 | Styling | Vanilla CSS |
 
 ## Repository Layout
 
 ```text
-backend/     FastAPI app, parser/matcher/generator services, tests, scripts
-frontend/    Next.js app
-test-data/   sample documents and generated stress-test corpora
-docs/        product and contributor documentation
+backend/         FastAPI app, parser/matcher/generator services, tests, scripts
+frontend/        Next.js app
+test-data/       34 sample questionnaires across xlsx, docx, pdf, and csv formats
+docs/            product and contributor documentation
+start-backend.sh one-command startup script for local development
 ```
 
 ## Local Development
@@ -114,6 +121,14 @@ npm run dev
 Open [http://localhost:3000](http://localhost:3000).
 
 Note: the frontend `.env.local` is configured for `http://127.0.0.1:8001`, so run backend on port `8001` for local development.
+
+### Quick Start (Both Services)
+
+```bash
+./start-backend.sh
+```
+
+This kills stale processes, starts both backend and frontend via `nohup`, and verifies health.
 
 ## Docker
 
@@ -151,56 +166,79 @@ QF_AGENT_MAX_CONTEXT_CHARS=6000
 
 Notes:
 
-- Supported providers in Settings: OpenAI API and Claude API (Anthropic).
+- Two providers are supported and configurable in Settings.
 - Parser profiles are still used to anchor exact question/answer placement in output documents.
 - Configure provider/base URL/model/key in the Settings page (keys are persisted in backend env settings).
-
-### Claude API (Anthropic)
-
-TrustReply also supports native Claude API settings:
-
-```bash
-QF_AGENT_PROVIDER=anthropic
-QF_AGENT_API_BASE=https://api.anthropic.com/v1
-QF_AGENT_API_KEY=your_anthropic_api_key
-QF_AGENT_MODEL=claude-3-5-haiku-latest
-QF_AGENT_DEFAULT_MODE=agent
-```
 
 Docker quick-start without saving your key in source:
 
 ```bash
-export OPENAI_API_KEY=your_api_key
+export QF_AGENT_API_KEY=your_api_key
 export QF_AGENT_ENABLED=true
 docker compose up --build
 ```
 
+## SME Routing Setup
+
+SME routing is optional and disabled by default. Enable it via Settings or environment variables:
+
+```bash
+QF_SME_ROUTING_ENABLED=true
+QF_CATEGORY_SME_MAP='{"Security": "security-team@company.com", "Privacy": "privacy@company.com"}'
+```
+
+When enabled, flagged questions are automatically assigned to the configured SME email for their category upon resolution.
+
 ## Example Data
 
-The repository includes example content under [test-data](/Users/kutluhanbayram/Desktop/AI%20QUESTIONNAIRE%20FILLER%20-%20DOCS/test-data), including:
+The repository includes 34 realistic GRC questionnaires under [test-data](test-data/), including:
 
-- starter knowledge-base CSVs
-- example questionnaire files
-- generated parser stress-test corpora for DOCX and CSV uploads
+- 11 Excel (.xlsx) files with dropdowns, merged cells, and color themes
+- 11 Word (.docx) files with styled tables and section headings
+- 10 PDF files with numbered questions and section dividers
+- 1 CSV file
+- A seed script (`backend/scripts/seed_demo_data.py`) to populate the knowledge base with 43 Q&A pairs across 10 GRC categories
+
+## Supported File Formats
+
+| Format | Upload | Output |
+|---|---|---|
+| `.docx` | Full table/paragraph/row-block parsing | Answers written back preserving styles |
+| `.pdf` | Question extraction via pdfplumber | Answers written to new PDF |
+| `.xlsx` | Auto-detect question/answer columns across sheets | Answers written back preserving dropdowns, merged cells, validation, and styles |
+| `.csv` | Tabular questionnaire parsing | Processed and matched |
 
 ## Current Limitations
 
-- PDF handling is more limited than DOCX write-back
-- CSV support is designed for tabular questionnaire layouts rather than arbitrary spreadsheet-style workbooks
-- scanned PDFs still need OCR support for best results
-- parser coverage is good for many common layouts, but not every possible enterprise form
-- the current default database is SQLite, which is ideal for local use and prototypes but not long-term multi-tenant production
+- PDF write-back is more limited than DOCX and XLSX round-trip
+- Scanned PDFs still need OCR support for best results
+- Parser coverage is good for many common layouts, but not every possible enterprise form
+
+## Environment Variables Reference
+
+| Variable | Description | Default |
+|---|---|---|
+| `QF_DATABASE_URL` | Database connection string | SQLite local |
+| `QF_SUPABASE_URL` | Supabase project URL (optional) | — |
+| `QF_SUPABASE_ANON_KEY` | Supabase anonymous key (optional) | — |
+| `QF_SUPABASE_JWT_SECRET` | JWT secret for auth (optional) | — |
+| `QF_AGENT_ENABLED` | Enable agent mode | `false` |
+| `QF_AGENT_PROVIDER` | Provider name | `openai` |
+| `QF_AGENT_API_KEY` | Provider API key | — |
+| `QF_AGENT_MODEL` | Model identifier | `gpt-4.1-nano` |
+| `QF_SME_ROUTING_ENABLED` | Enable SME routing | `false` |
+| `QF_CATEGORY_SME_MAP` | JSON map of category to SME email | `{}` |
 
 ## Open Source
 
 TrustReply is released under the MIT License. That means other developers can use, modify, and distribute the software under the terms of that license.
 
-Maintainers still control what gets merged into the official upstream project. If you want to contribute improvements back to the main repository, please follow [CONTRIBUTING.md](/Users/kutluhanbayram/Desktop/AI%20QUESTIONNAIRE%20FILLER%20-%20DOCS/CONTRIBUTING.md).
+Maintainers still control what gets merged into the official upstream project. If you want to contribute improvements back to the main repository, please follow [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Contributing
 
 Issues, fixes, parser improvements, UX improvements, and new document-layout support are all welcome.
 
-- Contribution guide: [CONTRIBUTING.md](/Users/kutluhanbayram/Desktop/AI%20QUESTIONNAIRE%20FILLER%20-%20DOCS/CONTRIBUTING.md)
-- Code of conduct: [CODE_OF_CONDUCT.md](/Users/kutluhanbayram/Desktop/AI%20QUESTIONNAIRE%20FILLER%20-%20DOCS/CODE_OF_CONDUCT.md)
-- License: [LICENSE](/Users/kutluhanbayram/Desktop/AI%20QUESTIONNAIRE%20FILLER%20-%20DOCS/LICENSE)
+- Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- License: [LICENSE](LICENSE)

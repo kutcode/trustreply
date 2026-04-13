@@ -11,17 +11,18 @@ Security teams and revenue teams regularly receive questionnaires asking about:
 - incident response
 - secure SDLC
 
-TrustReply helps answer these using an approved answer library so teams do not rewrite the same response for every prospect or partner.
+TrustReply helps answer these using an approved answer library so teams do not rewrite the same response for every prospect or partner. Source traceability links each answer back to the KB entry it came from for audit purposes.
 
 ## Vendor Risk Assessments
 
 Procurement and third-party risk teams often send very similar forms in different document formats. TrustReply can:
 
-- parse common questionnaire layouts
-- handle tabular CSV questionnaires alongside document uploads
+- parse common questionnaire layouts across DOCX, PDF, XLSX, and CSV
+- handle Excel workbooks with dropdowns and merged cells
 - reuse approved vendor-risk answers
-- flag missing questions for follow-up
+- flag missing questions for follow-up and route them to category-specific SMEs
 - group repeated unresolved prompts so they are answered once
+- detect contradictions between existing KB entries to maintain consistency
 
 ## Privacy Reviews
 
@@ -56,21 +57,35 @@ During procurement or partnership reviews, teams are often asked for:
 
 TrustReply can fill the common parts and surface the exceptions.
 
+## Excel-Based Questionnaires
+
+Many enterprises distribute questionnaires as Excel workbooks with:
+
+- dropdown validation cells (Yes/No/N/A)
+- merged header rows
+- color-coded sections
+- multiple sheets
+
+TrustReply parses these natively and writes answers back while preserving all formatting, data validation, and cell styles.
+
 ## Shared Answer Operations
 
 TrustReply is not only a document filler. It is also useful as a team workflow around institutional knowledge:
 
 - maintain a categorized answer base
-- review flagged questions in one queue
+- review flagged questions in one queue with SME routing
+- detect and resolve contradictions across KB entries
 - export unresolved items for SME completion in CSV form
 - sync newly answered questions back into the platform
+- track answer provenance with source traceability
 
 ## Stress Testing and Parser Validation
 
-The repository includes generated document corpora so maintainers can test:
+The repository includes 34 generated questionnaire files across XLSX, DOCX, PDF, and CSV formats so maintainers can test:
 
 - common layouts already expected to work
 - mixed-coverage documents with some known and some unknown answers
-- parser behavior across row-block, multi-column, paragraph-based, and CSV-based layouts
+- parser behavior across row-block, multi-column, paragraph-based, Excel, and CSV-based layouts
+- Excel format preservation including dropdowns, merged cells, and styles
 
 This makes TrustReply useful both as an end-user product and as a platform contributors can improve.

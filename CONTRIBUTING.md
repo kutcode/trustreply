@@ -6,9 +6,12 @@ Thanks for helping improve TrustReply.
 
 Contributions are especially useful in these areas:
 
-- parser support for additional document layouts
+- parser support for additional document layouts (DOCX, PDF, XLSX, CSV)
 - PDF extraction and OCR improvements
+- Excel format preservation and edge-case handling
 - knowledge-base management improvements
+- contradiction detection and duplicate classification enhancements
+- SME routing and workflow improvements
 - batch workflow and review UX
 - tests, fixtures, and reproducible bug cases
 - documentation and onboarding improvements
@@ -39,6 +42,12 @@ npm install
 npm run build
 ```
 
+### Quick Start (Both Services)
+
+```bash
+./start-backend.sh
+```
+
 ## Pull Requests
 
 Please keep pull requests focused and include:
@@ -58,6 +67,7 @@ This repository is open source, so developers may use and modify it under the pr
 - Add tests for parser, matcher, generator, or API behavior when possible.
 - Keep user-facing changes clear and practical.
 - Prefer deterministic behavior for sensitive document workflows.
+- When adding Excel support, ensure format preservation (dropdowns, merged cells, data validation, styles).
 
 ## Reporting Security Issues
 
