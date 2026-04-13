@@ -1,4 +1,4 @@
-"""Document generator — writes answers back into .docx files preserving formatting."""
+"""Document generator — writes answers back into .docx and .xlsx files preserving formatting."""
 
 from __future__ import annotations
 from pathlib import Path
@@ -7,6 +7,7 @@ from copy import deepcopy
 from docx import Document as DocxDocument
 from docx.shared import RGBColor
 from docx.oxml.ns import qn
+import openpyxl
 
 from app.services.parser import ExtractedItem, RunFormat
 from app.utils.csv_files import read_csv_rows, write_csv_rows
@@ -268,4 +269,58 @@ def generate_filled_csv(
             row[answer_col_idx] = item.answer_text or REVIEW_REQUIRED_PLACEHOLDER
 
     write_csv_rows(output_path, rows, csv_format)
+    return output_path
+
+
+def generate_filled_xlsx(
+    source_path: Path,
+    output_path: Path,
+    items: list[ExtractedItem],
+) -> Path:
+    """Fill an Excel questionnaire with matched answers, preserving formatting.
+
+    Opens the ORIGINAL uploaded workbook in write mode so that all existing
+    formatting (styles, data validation / dropdowns, conditional formatting,
+    merged cells, number formats) is preserved.  Only the answer cells
+    identified during parsing are overwritten.
+    """
+
+    wb = openpyxl.load_workbook(str(source_path))
+
+    for item in items:
+        if item.item_type != "excel_cell":
+            continue
+
+        sheet_name = item.location.get("sheet_name")
+        excel_row = item.location.get("excel_row")
+        a_col_idx = item.location.get("a_col_idx", item.location.get("answer_col_idx", 1))
+
+        if sheet_name is None or excel_row is None:
+            continue
+        if sheet_name not in wb.sheetnames:
+            continue
+
+        ws = wb[sheet_name]
+        # openpyxl uses 1-based row and column indices
+        col = a_col_idx + 1  # convert 0-based col index to 1-based
+
+        output_text = item.answer_text or REVIEW_REQUIRED_PLACEHOLDER
+
+        cell = ws.cell(row=excel_row, column=col)
+        cell.value = output_text
+
+        # If the answer is unresolved, apply a light visual cue without
+        # destroying the existing cell style.
+        if item.answer_text is None:
+            from openpyxl.styles import Font
+            existing_font = cell.font
+            cell.font = Font(
+                name=existing_font.name,
+                size=existing_font.size,
+                bold=existing_font.bold,
+                italic=True,
+                color="CC0000",
+            )
+
+    wb.save(str(output_path))
     return output_path

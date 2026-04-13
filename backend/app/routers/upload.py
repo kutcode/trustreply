@@ -30,7 +30,7 @@ from app.services.parser import (
     parse_document_result,
 )
 from app.services.matcher import match_questions
-from app.services.generator import generate_filled_csv, generate_filled_docx, generate_docx_from_pdf_items
+from app.services.generator import generate_filled_csv, generate_filled_docx, generate_filled_xlsx, generate_docx_from_pdf_items
 from app.services.agent import (
     AGENT_MODE_OFF,
     AgentRuntimeConfig,
@@ -81,7 +81,7 @@ def _deserialize_run_format(data: dict | None) -> RunFormat | None:
     # font_size and color_rgb are stored as strings; generator handles None gracefully
     return fmt
 
-ALLOWED_EXTENSIONS = {".docx", ".pdf", ".csv"}
+ALLOWED_EXTENSIONS = {".docx", ".pdf", ".csv", ".xlsx", ".xls"}
 
 
 def _clean_optional_form_value(value: str | None) -> str | None:
@@ -172,6 +172,11 @@ def _output_file_spec(original_filename: str, source_suffix: str) -> tuple[str, 
         )
     if source_suffix == ".csv":
         return (f"filled_{uuid.uuid4().hex[:8]}_{stem}.csv", "text/csv")
+    if source_suffix in (".xlsx", ".xls"):
+        return (
+            f"filled_{uuid.uuid4().hex[:8]}_{stem}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
     return (
         f"filled_{uuid.uuid4().hex[:8]}_{stem}.docx",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -186,6 +191,8 @@ def _media_type_for_path(path: Path) -> str:
         return "text/csv"
     if suffix == ".docx":
         return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if suffix == ".xlsx":
+        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     return "application/octet-stream"
 
 
@@ -694,6 +701,8 @@ async def _process_document(
                 generate_docx_from_pdf_items(output_path, items)
             elif suffix == ".csv":
                 generate_filled_csv(source_path, output_path, items)
+            elif suffix in (".xlsx", ".xls"):
+                generate_filled_xlsx(source_path, output_path, items)
 
             job.output_filename = output_name
             job.status = "done"
@@ -1375,6 +1384,8 @@ async def finalize_job(job_id: int, db: AsyncSession = Depends(get_db)):
         generate_docx_from_pdf_items(output_path, rebuilt_items)
     elif suffix == ".csv":
         generate_filled_csv(source_path, output_path, rebuilt_items)
+    elif suffix in (".xlsx", ".xls"):
+        generate_filled_xlsx(source_path, output_path, rebuilt_items)
 
     job.output_filename = output_name
     job.review_status = "finalized"

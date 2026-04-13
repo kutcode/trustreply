@@ -123,6 +123,10 @@ function SettingsConfigContent() {
     const [anthropicModelError, setAnthropicModelError] = useState('');
     const [editingProvider, setEditingProvider] = useState(null);
     const [testingConnection, setTestingConnection] = useState(null);
+    const [smeRoutingEnabled, setSmeRoutingEnabled] = useState(false);
+    const [categorySmeMap, setCategorySmeMap] = useState({});
+    const [newSmeCategory, setNewSmeCategory] = useState('');
+    const [newSmeEmail, setNewSmeEmail] = useState('');
 
     const toastTimeout = useRef(null);
     useEffect(() => {
@@ -171,6 +175,8 @@ function SettingsConfigContent() {
                 setAnthropicHasKey(antHasKey);
                 setAnthropicModel(data.agent_anthropic_model || 'claude-sonnet-4-6');
                 if (antHasKey) fetchModelsForProvider('anthropic');
+                setSmeRoutingEnabled(Boolean(data.sme_routing_enabled));
+                setCategorySmeMap(data.category_sme_map || {});
             })
             .catch(() => showToast('Failed to load settings', 'error'))
             .finally(() => setLoading(false));
@@ -211,7 +217,7 @@ function SettingsConfigContent() {
     const handleSaveGeneral = async () => {
         setSaving(true);
         try {
-            const payload = { similarity_threshold: similarityThreshold, default_parser_profile: defaultParserProfile, agent_enabled: agentEnabled, agent_timeout_seconds: agentTimeoutSeconds, agent_max_questions_per_call: agentMaxQuestionsPerCall, agent_default_mode: 'agent', agent_provider: agentProvider };
+            const payload = { similarity_threshold: similarityThreshold, default_parser_profile: defaultParserProfile, agent_enabled: agentEnabled, agent_timeout_seconds: agentTimeoutSeconds, agent_max_questions_per_call: agentMaxQuestionsPerCall, agent_default_mode: 'agent', agent_provider: agentProvider, sme_routing_enabled: smeRoutingEnabled, category_sme_map: categorySmeMap };
             const cfg = PROVIDER_CONFIGS[agentProvider === 'anthropic' ? 'anthropic' : 'openai'];
             payload.agent_api_base = cfg.apiBase;
             payload.agent_model = agentProvider === 'anthropic' ? anthropicModel : openaiModel;
@@ -313,6 +319,54 @@ function SettingsConfigContent() {
                             <div style={{ color: 'var(--text-muted)', fontSize: '0.82rem', marginTop: '0.3rem' }}>Questions are batched into chunks of this size.</div>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <div className="card" style={{ marginBottom: '1.25rem', padding: '1.25rem' }}>
+                <div className="section-header"><div className="section-header-icon">&#128101;</div><h2>SME Routing</h2></div>
+                <div style={{ display: 'grid', gap: '1rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        <label className="toggle-switch">
+                            <input type="checkbox" checked={smeRoutingEnabled} onChange={(e) => setSmeRoutingEnabled(e.target.checked)} />
+                            <span className="toggle-track" /><span className="toggle-label">Enable SME Routing</span>
+                        </label>
+                        <span style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>Automatically assign flagged questions to subject matter experts by category.</span>
+                    </div>
+                    {smeRoutingEnabled && (
+                        <>
+                            <div className="divider" />
+                            <div>
+                                <label className="form-label">Category to SME Email Mapping</label>
+                                {Object.keys(categorySmeMap).length > 0 && (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                                        {Object.entries(categorySmeMap).map(([cat, email]) => (
+                                            <div key={cat} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'var(--bg-input)', padding: '0.45rem 0.75rem', borderRadius: 'var(--radius-sm)' }}>
+                                                <span style={{ fontWeight: 600, minWidth: '120px' }}>{cat}</span>
+                                                <span style={{ color: 'var(--text-secondary)', flex: 1 }}>{email}</span>
+                                                <button type="button" className="btn btn-sm btn-secondary" onClick={() => {
+                                                    const next = { ...categorySmeMap };
+                                                    delete next[cat];
+                                                    setCategorySmeMap(next);
+                                                }} style={{ padding: '0.1rem 0.4rem', fontSize: '0.75rem' }}>x</button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                                    <input className="form-input" type="text" placeholder="Category" value={newSmeCategory} onChange={(e) => setNewSmeCategory(e.target.value)} style={{ flex: '1 1 140px' }} />
+                                    <input className="form-input" type="email" placeholder="sme@example.com" value={newSmeEmail} onChange={(e) => setNewSmeEmail(e.target.value)} style={{ flex: '2 1 200px' }} />
+                                    <button type="button" className="btn btn-sm btn-secondary" onClick={() => {
+                                        const cat = newSmeCategory.trim();
+                                        const email = newSmeEmail.trim();
+                                        if (!cat || !email) return;
+                                        setCategorySmeMap((prev) => ({ ...prev, [cat]: email }));
+                                        setNewSmeCategory('');
+                                        setNewSmeEmail('');
+                                    }}>Add</button>
+                                </div>
+                            </div>
+                        </>
+                    )}
                 </div>
             </div>
 

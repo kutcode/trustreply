@@ -250,6 +250,11 @@ export default function ReviewQueue({
                           {expandedReasoning.has(qr.id) ? '▾ Why' : '▸ Why'}
                         </button>
                       )}
+                      {qr.assigned_to && (
+                        <span style={{ display: 'inline-block', padding: '0.1rem 0.45rem', borderRadius: '999px', fontSize: '0.68rem', fontWeight: 600, background: 'var(--primary, #7c3aed)', color: '#fff' }} title={qr.assigned_to}>
+                          {qr.assigned_to}
+                        </span>
+                      )}
                       {qr.reviewed && (
                         <span className="status-badge status-done" style={{ fontSize: '0.72rem' }}>Reviewed</span>
                       )}

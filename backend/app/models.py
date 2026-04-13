@@ -93,6 +93,7 @@ class FlaggedQuestion(Base):
     resolved_answer = Column(Text, nullable=True)
     resolved_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=_utcnow)
+    assigned_to = Column(String(255), nullable=True)
 
     job = relationship("ProcessingJob", back_populates="flagged_questions")
 
@@ -120,6 +121,7 @@ class QuestionResult(Base):
     agent_reason = Column(Text, nullable=True)       # reasoning from agent fill decision
     agent_issues = Column(JSON, nullable=True)        # issues list from agent fill decision
     created_at = Column(DateTime, default=_utcnow)
+    assigned_to = Column(String(255), nullable=True)
 
     job = relationship("ProcessingJob", back_populates="question_results")
 
@@ -240,6 +242,7 @@ class DuplicateReview(Base):
     entry_b_id = Column(Integer, ForeignKey("qa_pairs.id"), nullable=False)
     similarity_score = Column(Float, nullable=False)
     classification = Column(String(32), nullable=True)  # definitely_same | probably_same | different
+    contradicts = Column(Boolean, nullable=True, default=None)
     reason = Column(Text, nullable=True)
     recommended_keep_id = Column(Integer, nullable=True)
     status = Column(String(32), default="pending")  # pending | reviewed | dismissed

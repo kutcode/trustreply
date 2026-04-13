@@ -618,6 +618,12 @@ export async function bulkActionDuplicateReviews(actions) {
     return res.json();
 }
 
+export async function getContradictionCount() {
+    const res = await apiFetch('/api/qa/contradictions/count');
+    if (!res.ok) return { count: 0 };
+    return res.json();
+}
+
 // ── Audit Trail ───────────────────────────────────────────────────
 
 export async function listAuditLogs({ jobId = null, actionType = null, entityType = null, fromDate = null, toDate = null, page = 1, pageSize = 50 } = {}) {

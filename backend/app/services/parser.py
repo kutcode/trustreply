@@ -130,6 +130,12 @@ def parse_csv_result(file_path: Path, options: ParseOptions | None = None) -> Pa
     return HeuristicParser().parse_csv(file_path, options)
 
 
+def parse_xlsx_result(file_path: Path, options: ParseOptions | None = None) -> ParseResult:
+    """Parse an Excel file and return extracted items with parser diagnostics."""
+
+    return HeuristicParser().parse_xlsx(file_path, options)
+
+
 def parse_document_result(file_path: Path, options: ParseOptions | None = None) -> ParseResult:
     """Parse any supported document and return a structured parse result."""
 
@@ -152,6 +158,12 @@ def parse_csv(file_path: Path, options: ParseOptions | None = None) -> list[Extr
     """Backward-compatible CSV parser that returns extracted items only."""
 
     return parse_csv_result(file_path, options).items
+
+
+def parse_xlsx(file_path: Path, options: ParseOptions | None = None) -> list[ExtractedItem]:
+    """Backward-compatible Excel parser that returns extracted items only."""
+
+    return parse_xlsx_result(file_path, options).items
 
 
 def parse_document(file_path: Path, options: ParseOptions | None = None) -> list[ExtractedItem]:

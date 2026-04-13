@@ -281,9 +281,16 @@ export default function FlaggedContent() {
                                         <div style={{ fontWeight: 600, fontSize: '1rem' }}>{fq.extracted_question}</div>
                                     </div>
                                 </div>
-                                <span className={`status-badge ${fq.resolved ? fq.resolved_answer === '[Dismissed]' ? 'status-error' : 'status-done' : 'status-pending'}`}>
-                                    {fq.resolved ? fq.resolved_answer === '[Dismissed]' ? 'Dismissed' : 'Resolved' : 'Pending'}
-                                </span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    {fq.assigned_to && (
+                                        <span style={{ display: 'inline-block', padding: '0.15rem 0.55rem', borderRadius: '999px', fontSize: '0.72rem', fontWeight: 600, background: 'var(--primary, #7c3aed)', color: '#fff' }}>
+                                            {fq.assigned_to}
+                                        </span>
+                                    )}
+                                    <span className={`status-badge ${fq.resolved ? fq.resolved_answer === '[Dismissed]' ? 'status-error' : 'status-done' : 'status-pending'}`}>
+                                        {fq.resolved ? fq.resolved_answer === '[Dismissed]' ? 'Dismissed' : 'Resolved' : 'Pending'}
+                                    </span>
+                                </div>
                             </div>
 
                             {fq.best_match_question && (

@@ -25,6 +25,19 @@ class Settings(BaseSettings):
             except json.JSONDecodeError:
                 return []
         return [item.strip() for item in v.split(",") if item.strip()]
+
+    @field_validator("category_sme_map", mode="before")
+    @classmethod
+    def _parse_dict_field(cls, v):
+        """Accept empty strings, JSON objects, or pass through dicts."""
+        if isinstance(v, dict):
+            return v
+        if not isinstance(v, str) or not v.strip():
+            return {}
+        try:
+            return json.loads(v)
+        except json.JSONDecodeError:
+            return {}
     # Paths
     base_dir: Path = Path(__file__).resolve().parent.parent
     upload_dir: Path = base_dir / "uploads"
@@ -76,6 +89,10 @@ class Settings(BaseSettings):
     # Feedback loop
     feedback_auto_add_to_kb: bool = True       # Auto-add user corrections to KB on finalize
     feedback_min_confidence: float = 0.0        # Only auto-add if original confidence was above this
+
+    # SME Routing
+    sme_routing_enabled: bool = False
+    category_sme_map: dict = {}  # {"Security": "alice@example.com", "Privacy": "bob@example.com"}
 
     # Authentication
     api_key: str = ""

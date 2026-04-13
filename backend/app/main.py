@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -93,6 +94,8 @@ def _settings_response() -> dict:
         "agent_openai_model": settings.agent_openai_model,
         "agent_anthropic_has_key": bool(settings.agent_anthropic_api_key.strip()),
         "agent_anthropic_model": settings.agent_anthropic_model,
+        "sme_routing_enabled": settings.sme_routing_enabled,
+        "category_sme_map": settings.category_sme_map,
     }
 
 
@@ -321,6 +324,8 @@ _FIELD_TO_ENV: dict[str, str] = {
     "agent_openai_model": "QF_AGENT_OPENAI_MODEL",
     "agent_anthropic_api_key": "QF_AGENT_ANTHROPIC_API_KEY",
     "agent_anthropic_model": "QF_AGENT_ANTHROPIC_MODEL",
+    "sme_routing_enabled": "QF_SME_ROUTING_ENABLED",
+    "category_sme_map": "QF_CATEGORY_SME_MAP",
 }
 
 
@@ -395,7 +400,12 @@ async def update_settings(body: AppSettingsUpdate):
         update_setting(field_name, value)
         env_key = _FIELD_TO_ENV.get(field_name)
         if env_key:
-            env_updates[env_key] = str(value).lower() if isinstance(value, bool) else str(value)
+            if isinstance(value, bool):
+                env_updates[env_key] = str(value).lower()
+            elif isinstance(value, dict):
+                env_updates[env_key] = json.dumps(value)
+            else:
+                env_updates[env_key] = str(value)
 
     if env_updates:
         _persist_to_env_file(env_updates)

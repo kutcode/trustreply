@@ -10,6 +10,7 @@ import {
     listCategories,
     getApiBaseHint,
     downloadQAExport,
+    getContradictionCount,
 } from '@/lib/api';
 import LoadingSkeleton from '@/components/LoadingSkeleton';
 
@@ -33,6 +34,7 @@ export default function KBEntriesContent() {
     const [showImport, setShowImport] = useState(false);
     const [importDragover, setImportDragover] = useState(false);
     const [importing, setImporting] = useState(false);
+    const [contradictionCount, setContradictionCount] = useState(0);
 
     const toastTimeout = useRef(null);
     useEffect(() => {
@@ -80,6 +82,9 @@ export default function KBEntriesContent() {
 
     useEffect(() => { loadData(); }, [loadData]);
     useEffect(() => { loadCategories(); }, [loadCategories]);
+    useEffect(() => {
+        getContradictionCount().then((data) => setContradictionCount(data.count || 0)).catch(() => {});
+    }, []);
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -157,6 +162,14 @@ export default function KBEntriesContent() {
             {toast && (
                 <div className="toast-container" role="status" aria-live="polite">
                     <div className={`toast toast-${toast.type}`}>{toast.message}</div>
+                </div>
+            )}
+
+            {contradictionCount > 0 && (
+                <div style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid #ef4444', borderRadius: '8px', padding: '0.75rem 1.25rem', marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: '#ef4444', fontWeight: 600 }}>
+                        {'\u26A0'} {contradictionCount} contradicting answer{contradictionCount !== 1 ? 's' : ''} detected in your knowledge base
+                    </span>
                 </div>
             )}
 

@@ -1,9 +1,0 @@
-Question,Answer
-What is your company name?,We are Acme Corp
-Where is your company headquartered?,San Francisco
-How many employees does your organization have?,About 800
-Do you have a dedicated information security team?,Yes
-What security certifications does your organization hold?,SOC 2
-Do you encrypt data at rest?,Yes AES-256
-Do you encrypt data in transit?,Yes TLS
-How do you manage access control?,RBAC

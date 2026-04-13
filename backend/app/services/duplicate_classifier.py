@@ -28,7 +28,8 @@ Respond with a JSON object containing a "pairs" array. Each element must have:
   - "probably_same": The questions are very similar but might have subtle differences in scope
   - "different": The questions actually ask about different things despite surface similarity
 - "reason": (string) a brief 1-sentence explanation
-- "recommended_keep_id": (int) the ID of the entry with the better/more complete answer"""
+- "recommended_keep_id": (int) the ID of the entry with the better/more complete answer
+- "contradicts": (bool) true ONLY if the answers give opposing or inconsistent information (e.g. one says "Yes, we are SOC 2 certified" while the other says "We are pursuing SOC 2 certification"). false if answers are consistent or complementary."""
 
 BATCH_SIZE = 10
 
@@ -94,6 +95,7 @@ async def classify_duplicate_pairs(
                         "classification": item.get("classification", "probably_same"),
                         "reason": item.get("reason", ""),
                         "recommended_keep_id": item.get("recommended_keep_id"),
+                        "contradicts": item.get("contradicts", False),
                     })
         except Exception:
             logger.exception(

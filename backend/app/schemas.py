@@ -97,6 +97,7 @@ class FlaggedQuestionResponse(BaseModel):
     resolved_answer: str | None
     resolved_at: datetime.datetime | None
     created_at: datetime.datetime
+    assigned_to: str | None = None
     occurrence_count: int = 1
     job_ids: list[int] = Field(default_factory=list)
     filenames: list[str] = Field(default_factory=list)
@@ -161,6 +162,7 @@ class QuestionResultResponse(BaseModel):
     agent_reason: str | None = None
     agent_issues: list[str] | None = None
     created_at: datetime.datetime
+    assigned_to: str | None = None
 
     class Config:
         from_attributes = True
@@ -218,6 +220,8 @@ class AppSettingsUpdate(BaseModel):
     agent_openai_model: str | None = None
     agent_anthropic_api_key: str | None = None
     agent_anthropic_model: str | None = None
+    sme_routing_enabled: bool | None = None
+    category_sme_map: dict | None = None
 
 
 class AgentModelsRequest(BaseModel):
@@ -367,6 +371,7 @@ class ClassifiedPair(BaseModel):
     classification: str
     reason: str
     recommended_keep_id: int | None
+    contradicts: bool = False
 
 
 class DuplicateClassifyResponse(BaseModel):
@@ -383,6 +388,7 @@ class DuplicateReviewItem(BaseModel):
     classification: str | None = None
     reason: str | None = None
     recommended_keep_id: int | None = None
+    contradicts: bool | None = None
     status: str
     source: str
     created_at: datetime.datetime

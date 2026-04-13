@@ -372,6 +372,11 @@ function ReviewQueueTab({ showToast }) {
                                 <div style={{ padding: '0.75rem 1.25rem', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
                                         <ClassBadge classification={review.classification} />
+                                        {review.contradicts === true && (
+                                            <span style={{ display: 'inline-block', padding: '0.2rem 0.6rem', borderRadius: '9999px', fontSize: '0.75rem', fontWeight: 700, color: '#ef4444', background: 'rgba(239, 68, 68, 0.12)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
+                                                Contradiction
+                                            </span>
+                                        )}
                                         <SimilarityBar score={review.similarity_score} />
                                         {review.source === 'auto_flag' && <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', background: 'var(--bg-input)', padding: '0.15rem 0.45rem', borderRadius: '4px' }}>AUTO</span>}
                                     </div>

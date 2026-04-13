@@ -537,6 +537,7 @@ async def classify_duplicates(
             review.classification = item["classification"]
             review.reason = item["reason"]
             review.recommended_keep_id = item.get("recommended_keep_id")
+            review.contradicts = item.get("contradicts", False)
 
             entry_a, entry_b, similarity = new_pairs[pair_idx]
             classified_pairs.append(ClassifiedPair(
@@ -547,6 +548,7 @@ async def classify_duplicates(
                 classification=item["classification"],
                 reason=item["reason"],
                 recommended_keep_id=item.get("recommended_keep_id"),
+                contradicts=item.get("contradicts", False),
             ))
 
     # Also include already-classified pairs in response
@@ -564,6 +566,7 @@ async def classify_duplicates(
             classification=review.classification or "probably_same",
             reason=review.reason or "",
             recommended_keep_id=review.recommended_keep_id,
+            contradicts=review.contradicts or False,
         ))
 
     await db.commit()
@@ -573,6 +576,20 @@ async def classify_duplicates(
         total_classified=len(classified_pairs),
         llm_model=get_llm_model_name(),
     )
+
+
+@router.get("/contradictions/count")
+async def count_contradictions(db: AsyncSession = Depends(get_db)):
+    """Count KB entries with detected contradictions."""
+    result = await db.execute(
+        select(func.count()).select_from(
+            select(DuplicateReview.id).where(
+                DuplicateReview.contradicts.is_(True),
+                DuplicateReview.status != "dismissed",
+            ).subquery()
+        )
+    )
+    return {"count": result.scalar() or 0}
 
 
 @router.get("/duplicates/reviews", response_model=DuplicateReviewListResponse)

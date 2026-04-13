@@ -252,7 +252,9 @@ class HeuristicParser(BaseParser):
             return self.parse_pdf(file_path, options)
         if suffix == ".csv":
             return self.parse_csv(file_path, options)
-        raise ValueError(f"Unsupported file type: {suffix}. Supported: .docx, .pdf, .csv")
+        if suffix in (".xlsx", ".xls"):
+            return self.parse_xlsx(file_path, options)
+        raise ValueError(f"Unsupported file type: {suffix}. Supported: .docx, .pdf, .csv, .xlsx, .xls")
 
     def parse_docx(self, file_path: Path, options: ParseOptions | None = None) -> ParseResult:
         options = options or ParseOptions()
@@ -412,6 +414,10 @@ class HeuristicParser(BaseParser):
             fallback_recommended=fallback_recommended,
             fallback_reason=fallback_reason,
         )
+
+    def parse_xlsx(self, file_path: Path, options: ParseOptions | None = None) -> ParseResult:
+        from app.services.parsers.excel_parser import parse_excel
+        return parse_excel(file_path, options)
 
     def _parse_docx_tables(
         self,

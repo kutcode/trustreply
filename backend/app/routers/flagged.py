@@ -10,6 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db, async_session
 from app.models import FlaggedQuestion, ProcessingJob, QAPair
 from app.services.duplicate_flag import check_and_flag_duplicates
@@ -395,6 +396,15 @@ async def resolve_flagged(
         if duplicate.extracted_question not in seen_questions:
             unique_questions.append(duplicate.extracted_question)
             seen_questions.add(duplicate.extracted_question)
+
+    # SME routing: assign flagged question to subject matter expert if enabled
+    if data.add_to_knowledge_base and data.category:
+        category = data.category.strip()
+        if settings.sme_routing_enabled and category:
+            sme_email = settings.category_sme_map.get(category)
+            if sme_email:
+                for duplicate in duplicates:
+                    duplicate.assigned_to = sme_email
 
     # Optionally add to knowledge base (upsert: update if same question exists)
     new_kb_entry_ids: list[int] = []
