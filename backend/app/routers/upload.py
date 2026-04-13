@@ -1149,7 +1149,7 @@ async def list_question_results(job_id: int, db: AsyncSession = Depends(get_db))
 
     # Batch-fetch all referenced KB pairs (source traceability)
     kb_ids = {q.kb_pair_id for q in items if q.kb_pair_id}
-    kb_lookup: dict[int, "QAPair"] = {}
+    kb_lookup: dict = {}
     if kb_ids:
         from app.models import QAPair as _QAPair  # local import to avoid cycle
         kb_result = await db.execute(
