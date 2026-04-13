@@ -7,7 +7,10 @@ import logging
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.models import QAPair
 
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks, Form, Query
 from sqlalchemy import select, func as sa_func
