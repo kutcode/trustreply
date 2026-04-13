@@ -1047,7 +1047,7 @@ async def run_contextual_fill_agent(
                         "sitting down to fill in a questionnaire on behalf of their company.\n\n"
                         "CRITICAL CONTEXT RULES:\n"
                         "1. The DOCUMENT CONTEXT shows the questionnaire being filled. Read headers, titles, and "
-                        "surrounding text to understand WHO is being asked (e.g., which company/vendor).\n"
+                        "surrounding text to understand WHO is being asked (e.g., which company or customer).\n"
                         "2. The KB CANDIDATES contain answers from YOUR company's knowledge base — these are "
                         "answers about YOUR company's policies, practices, and information.\n"
                         "3. For GENERAL questions about your company (security policies, compliance, certifications, "
@@ -1093,7 +1093,7 @@ async def run_contextual_fill_agent(
                     "role": "system",
                     "content": (
                         "You are FillAgent for questionnaire completion. Think like a professional filling in "
-                        "a vendor/compliance questionnaire on behalf of their company.\n\n"
+                        "a security or compliance questionnaire on behalf of their company.\n\n"
                         "DECISION RULES:\n"
                         "1. ACTION='answer' only when confidence >= 0.7 AND the answer is factually supported "
                         "by KB candidates or clear document context.\n"

@@ -1,6 +1,6 @@
 # TrustReply
 
-TrustReply is an open-source platform for automating questionnaire responses. It helps teams answer vendor, security, compliance, privacy, due-diligence, and operational questionnaires by reusing approved answers from a knowledge base, matching them semantically, filling supported document formats, and routing missing answers into a human-review workflow.
+TrustReply is an open-source platform for automating security and customer questionnaire responses. It helps teams answer security reviews, compliance assessments, privacy questionnaires, and due-diligence forms by reusing approved answers from a knowledge base, matching them semantically, filling supported document formats, and routing missing answers into a human-review workflow.
 
 ## Why TrustReply
 
@@ -37,11 +37,11 @@ The product approach is:
 TrustReply is useful anywhere a team repeatedly answers structured questionnaires:
 
 - Security reviews and SIG-style questionnaires
-- Vendor and third-party risk assessments
+- Customer security assessments
 - Privacy and data-handling questionnaires
 - Business continuity and disaster recovery assessments
-- Procurement and due-diligence packets
-- Internal operations and compliance forms
+- Compliance and due-diligence forms
+- Internal operations and governance assessments
 
 More examples are documented in [docs/USE_CASES.md](docs/USE_CASES.md).
 

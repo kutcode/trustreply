@@ -11,15 +11,15 @@ Security teams and revenue teams regularly receive questionnaires asking about:
 - incident response
 - secure SDLC
 
-TrustReply helps answer these using an approved answer library so teams do not rewrite the same response for every prospect or partner. Source traceability links each answer back to the KB entry it came from for audit purposes.
+TrustReply helps answer these using an approved answer library so teams do not rewrite the same response for every customer or prospect. Source traceability links each answer back to the KB entry it came from for audit purposes.
 
-## Vendor Risk Assessments
+## Customer Security Assessments
 
-Procurement and third-party risk teams often send very similar forms in different document formats. TrustReply can:
+Customers and prospects regularly send security questionnaires in different document formats before signing contracts. TrustReply can:
 
 - parse common questionnaire layouts across DOCX, PDF, XLSX, and CSV
 - handle Excel workbooks with dropdowns and merged cells
-- reuse approved vendor-risk answers
+- reuse approved security answers across every customer assessment
 - flag missing questions for follow-up and route them to category-specific SMEs
 - group repeated unresolved prompts so they are answered once
 - detect contradictions between existing KB entries to maintain consistency
@@ -46,9 +46,9 @@ Continuity and operations teams often answer repetitive questions about:
 
 TrustReply reduces manual re-entry while keeping sensitive answers reviewable.
 
-## Due Diligence and Procurement
+## Due Diligence and Compliance
 
-During procurement or partnership reviews, teams are often asked for:
+During customer onboarding or partnership reviews, teams are often asked for:
 
 - company and entity information
 - compliance posture
