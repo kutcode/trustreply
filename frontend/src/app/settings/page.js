@@ -11,19 +11,19 @@ import ActivityLogContent from '@/components/ActivityLogContent';
 const SETTINGS_TABS = [
     { key: 'configuration', label: 'Configuration', icon: '⚙' },
     { key: 'formats', label: 'Learned Formats', icon: '🧠' },
-    { key: 'learning', label: 'Agent Learning', icon: '🤖' },
+    { key: 'learning', label: 'Corrections', icon: '📝' },
     { key: 'activity', label: 'Activity Log', icon: '📜' },
 ];
 
 const PROVIDER_CONFIGS = {
     openai: {
-        label: 'OpenAI', provider: 'openai', apiBase: 'https://api.openai.com/v1',
+        label: 'Provider A', provider: 'openai', apiBase: 'https://api.openai.com/v1',
         defaultModel: 'gpt-4.1-nano', keyHint: 'sk-...',
         settingsKeyField: 'agent_openai_api_key', settingsModelField: 'agent_openai_model',
         hasKeyField: 'agent_openai_has_key', modelField: 'agent_openai_model',
     },
     anthropic: {
-        label: 'Claude (Anthropic)', provider: 'anthropic', apiBase: 'https://api.anthropic.com/v1',
+        label: 'Provider B', provider: 'anthropic', apiBase: 'https://api.anthropic.com/v1',
         defaultModel: 'claude-sonnet-4-6', keyHint: 'sk-ant-...',
         settingsKeyField: 'agent_anthropic_api_key', settingsModelField: 'agent_anthropic_model',
         hasKeyField: 'agent_anthropic_has_key', modelField: 'agent_anthropic_model',
@@ -290,7 +290,7 @@ function SettingsConfigContent() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                         <label className="toggle-switch">
                             <input type="checkbox" checked={agentEnabled} onChange={(e) => setAgentEnabled(e.target.checked)} />
-                            <span className="toggle-track" /><span className="toggle-label">Enable AI Agent</span>
+                            <span className="toggle-track" /><span className="toggle-label">Enable Smart Agent</span>
                         </label>
                         <span style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>When enabled, agent modes become available on Upload.</span>
                     </div>
@@ -299,8 +299,8 @@ function SettingsConfigContent() {
                         <div>
                             <label className="form-label">Default Provider</label>
                             <select className="form-select" value={agentProvider} onChange={(e) => setAgentProvider(e.target.value)}>
-                                <option value="openai">OpenAI</option>
-                                <option value="anthropic">Claude (Anthropic)</option>
+                                <option value="openai">Provider A</option>
+                                <option value="anthropic">Provider B</option>
                             </select>
                         </div>
                         <div>
@@ -392,7 +392,7 @@ function SettingsPageInner() {
         <div className="page-container">
             <div className="page-header">
                 <h1>Settings</h1>
-                <p>Configure AI providers, matching parameters, formats, and view system activity.</p>
+                <p>Configure providers, matching parameters, formats, and view system activity.</p>
             </div>
             <SubTabs tabs={SETTINGS_TABS} activeTab={activeTab} onChange={handleTabChange} />
             {activeTab === 'configuration' && <SettingsConfigContent />}

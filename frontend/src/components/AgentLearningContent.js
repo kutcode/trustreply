@@ -11,7 +11,7 @@ function formatDate(ts) {
 function truncate(text, max = 100) { return !text ? '—' : text.length > max ? text.slice(0, max) + '...' : text; }
 
 const SOURCE_LABELS = {
-    agent: { label: 'AI Agent', color: 'var(--color-info, #60a5fa)' },
+    agent: { label: 'Agent', color: 'var(--color-info, #60a5fa)' },
     kb_match: { label: 'KB Match', color: 'var(--color-success)' },
     kb_direct: { label: 'KB Direct', color: 'var(--color-success)' },
     template: { label: 'Template', color: 'var(--color-warning)' },
@@ -135,7 +135,7 @@ export default function AgentLearningContent() {
                 </>
             ) : (
                 <div className="empty-state">
-                    <div className="empty-state-icon">🤖</div>
+                    <div className="empty-state-icon">📝</div>
                     <div className="empty-state-title">No corrections yet</div>
                     <p>When you edit answers during review and finalize a job, corrections are captured here.</p>
                 </div>

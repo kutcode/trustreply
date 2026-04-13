@@ -279,7 +279,7 @@ function ReviewQueueTab({ showToast }) {
 
     const handleBulkAcceptAI = useCallback(async () => {
         const items = reviews.filter((r) => r.status === 'pending' && r.classification && r.classification !== 'different');
-        if (items.length === 0) { showToast('No pending AI recommendations to apply.', 'info'); return; }
+        if (items.length === 0) { showToast('No pending recommendations to apply.', 'info'); return; }
         setBulkProcessing(true);
         try {
             const actions = items.map((r) => ({ review_id: r.id, action: r.recommended_keep_id === r.entry_a?.id ? 'keep_left' : 'keep_right' }));
@@ -315,8 +315,8 @@ function ReviewQueueTab({ showToast }) {
                         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.95rem', fontWeight: 600, minWidth: '40px' }}>{classifyThreshold.toFixed(2)}</span>
                     </div>
                     <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                        <button className="btn btn-primary" onClick={handleClassify} disabled={classifying}>{classifying ? 'Classifying with AI...' : 'Scan & Classify with AI'}</button>
-                        <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Uses embeddings + LLM to detect and classify duplicate pairs</span>
+                        <button className="btn btn-primary" onClick={handleClassify} disabled={classifying}>{classifying ? 'Classifying...' : 'Scan & Classify'}</button>
+                        <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Detect and classify duplicate pairs using semantic analysis</span>
                     </div>
                 </div>
             </div>
@@ -334,7 +334,7 @@ function ReviewQueueTab({ showToast }) {
                 {statusFilter === 'pending' && pendingCount > 0 && (
                     <div style={{ display: 'flex', gap: '0.5rem' }}>
                         <button className="btn btn-sm btn-secondary" onClick={() => setConfirmAction({ message: 'Dismiss all "different" pairs?', onConfirm: async () => { setConfirmAction(null); await handleDismissAll(); } })} disabled={bulkProcessing}>Dismiss "Different"</button>
-                        <button className="btn btn-sm btn-primary" onClick={() => setConfirmAction({ message: 'Accept AI recommendations for all duplicate pairs?', onConfirm: async () => { setConfirmAction(null); await handleBulkAcceptAI(); } })} disabled={bulkProcessing}>{bulkProcessing ? 'Processing...' : 'Accept All AI'}</button>
+                        <button className="btn btn-sm btn-primary" onClick={() => setConfirmAction({ message: 'Accept recommendations for all duplicate pairs?', onConfirm: async () => { setConfirmAction(null); await handleBulkAcceptAI(); } })} disabled={bulkProcessing}>{bulkProcessing ? 'Processing...' : 'Accept All'}</button>
                     </div>
                 )}
             </div>
@@ -356,7 +356,7 @@ function ReviewQueueTab({ showToast }) {
                 <div className="empty-state">
                     <div className="empty-state-icon">🔍</div>
                     <div className="empty-state-title">{statusFilter === 'pending' ? 'No pending reviews' : 'No reviews found'}</div>
-                    <p>{statusFilter === 'pending' ? 'Run "Scan & Classify with AI" to detect duplicates.' : 'No duplicate reviews match this filter.'}</p>
+                    <p>{statusFilter === 'pending' ? 'Run "Scan & Classify" to detect duplicates.' : 'No duplicate reviews match this filter.'}</p>
                 </div>
             )}
 
@@ -386,7 +386,7 @@ function ReviewQueueTab({ showToast }) {
                                     {[{ entry: review.entry_a, label: 'Entry A', isRec: recIsLeft }, { entry: review.entry_b, label: 'Entry B', isRec: recIsRight }].map(({ entry, label, isRec }) => (
                                         <div key={label} style={{ padding: '1rem 1.25rem', borderRight: label === 'Entry A' ? '1px solid var(--border-color)' : 'none', background: isRec ? 'rgba(99,102,241,0.04)' : 'transparent' }}>
                                             <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
-                                                {label} {isRec && <span style={{ color: 'var(--accent)' }}>(AI Pick)</span>}
+                                                {label} {isRec && <span style={{ color: 'var(--accent)' }}>(Recommended)</span>}
                                             </div>
                                             <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.4rem', lineHeight: 1.35 }}>{entry?.question}</div>
                                             <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: '0.4rem' }}>{truncate(entry?.answer, 200)}</div>
@@ -399,7 +399,7 @@ function ReviewQueueTab({ showToast }) {
                                 </div>
                                 {review.reason && (
                                     <div style={{ padding: '0.6rem 1.25rem', borderTop: '1px solid var(--border-color)', fontSize: '0.85rem', color: 'var(--text-secondary)', background: 'var(--bg-input)' }}>
-                                        <span style={{ fontWeight: 600, color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase', marginRight: '0.5rem' }}>AI Reason:</span>{review.reason}
+                                        <span style={{ fontWeight: 600, color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase', marginRight: '0.5rem' }}>Reason:</span>{review.reason}
                                     </div>
                                 )}
                                 {isPending && (

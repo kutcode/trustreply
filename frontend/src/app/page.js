@@ -22,7 +22,7 @@ import UploadZone from '@/components/UploadZone';
 import ConfigPanel from '@/components/ConfigPanel';
 import ReviewQueue from '@/components/ReviewQueue';
 
-const SUPPORTED_EXTENSIONS = new Set(['docx', 'pdf', 'csv']);
+const SUPPORTED_EXTENSIONS = new Set(['docx', 'pdf', 'xlsx', 'xls', 'csv']);
 const FALLBACK_MAX_BULK_FILES = 50;
 
 const SESSION_JOB_KEY = 'trustreply_current_job_id';
@@ -459,7 +459,7 @@ export default function UploadPage() {
           lines.push(formatThinkingLine(event));
         }
       } else {
-        lines.push('Waiting for AI activity...');
+        lines.push('Waiting for activity...');
       }
       return lines.join('\n');
     }
@@ -478,7 +478,7 @@ export default function UploadPage() {
       }
 
       if (flattened.length === 0) {
-        return 'Waiting for AI activity across the current batch...';
+        return 'Waiting for activity across the current batch...';
       }
 
       flattened
@@ -488,7 +488,7 @@ export default function UploadPage() {
       return batchLines.join('\n');
     }
 
-    return 'No AI thinking logs yet. Upload a file and pick an AI answering mode.';
+    return 'No activity logs yet. Upload a file and pick an answering mode.';
   }, [currentJob, batchSummary]);
 
   useEffect(() => {
@@ -504,7 +504,7 @@ export default function UploadPage() {
       <div className="page-header" style={{ textAlign: 'center', marginBottom: '2.5rem' }}>
         <h1 style={{ fontSize: '2.5rem', marginBottom: '0.65rem' }}>TrustReply</h1>
         <p style={{ maxWidth: '600px', margin: '0 auto' }}>
-          Upload one or many .docx, .pdf, or .csv questionnaires and TrustReply will auto-fill answers from your knowledge base.
+          Upload one or many .docx, .pdf, .xlsx, or .csv questionnaires and TrustReply will auto-fill answers from your knowledge base.
         </p>
       </div>
 
@@ -539,7 +539,7 @@ export default function UploadPage() {
           </button>
           {agentModeBlocked && (
             <div style={{ marginTop: '0.55rem', color: 'var(--warning)', fontSize: '0.84rem' }}>
-              Configure AI provider in <Link href="/settings" style={{ color: 'var(--warning)', textDecoration: 'underline' }}>Settings</Link> or switch back to Semantic Only.
+              Configure provider in <Link href="/settings" style={{ color: 'var(--warning)', textDecoration: 'underline' }}>Settings</Link> or switch back to Semantic Only.
             </div>
           )}
         </div>
@@ -565,7 +565,7 @@ export default function UploadPage() {
               <div style={{ marginBottom: '1rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
                   <span style={{ fontSize: '0.9rem' }}>💭</span>
-                  <span style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>AI Thinking</span>
+                  <span style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Processing Log</span>
                 </div>
                 <textarea
                   ref={thinkingRef}
@@ -634,7 +634,7 @@ export default function UploadPage() {
                   {currentJob.agent_llm_calls > 0 && (
                     <div className="stat-card">
                       <div className="stat-value">{currentJob.agent_llm_calls}</div>
-                      <div className="stat-label">LLM Calls</div>
+                      <div className="stat-label">Engine Calls</div>
                     </div>
                   )}
                   {(currentJob.agent_input_tokens > 0 || currentJob.agent_output_tokens > 0) && (
@@ -881,7 +881,7 @@ export default function UploadPage() {
               <div style={{ marginBottom: '1rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
                   <span style={{ fontSize: '0.9rem' }}>💭</span>
-                  <span style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>AI Thinking</span>
+                  <span style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Processing Log</span>
                 </div>
                 <textarea
                   ref={thinkingRef}

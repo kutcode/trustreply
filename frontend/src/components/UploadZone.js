@@ -33,7 +33,7 @@ export default function UploadZone({ selectedFiles, maxBulkFiles, onFilesSelecte
       >
         <input
           type="file"
-          accept=".docx,.pdf,.csv"
+          accept=".docx,.pdf,.xlsx,.xls,.csv"
           multiple
           onChange={handleFileChange}
           id="file-upload"
@@ -49,7 +49,7 @@ export default function UploadZone({ selectedFiles, maxBulkFiles, onFilesSelecte
         </div>
         <div className="upload-zone-subtitle">
           {selectedFiles.length === 0
-            ? `Supports .docx, .pdf, and .csv files. You can drop multiple files at once, up to ${maxBulkFiles} per batch.`
+            ? `Supports .docx, .pdf, .xlsx, and .csv files. You can drop multiple files at once, up to ${maxBulkFiles} per batch.`
             : `${(selectedFiles.reduce((total, file) => total + file.size, 0) / 1024).toFixed(1)} KB total`}
         </div>
       </div>

@@ -95,9 +95,9 @@ export default function TroubleshootPage() {
         }
         const lastResult = results.length > 0 ? results[results.length - 1]?.result : null;
         if (lastResult?.agent_analysis?.status === 'skipped') {
-            return 'Agent diagnostics skipped. Configure AI provider in Settings to run model-level troubleshooting.';
+            return 'Advanced diagnostics skipped. Configure provider in Settings to run deep troubleshooting.';
         }
-        return 'No AI troubleshooting logs yet. Analyze a file to view model thinking.';
+        return 'No troubleshooting logs yet. Analyze a file to view diagnostics.';
     }, [thinkingLines, results]);
 
     const validateAndSetFiles = (candidates) => {
@@ -253,7 +253,7 @@ export default function TroubleshootPage() {
                 <p>
                     Drop in a problematic questionnaire and we&apos;ll run it through each parser profile, show what
                     was extracted, and recommend the best retry path. Base diagnostics are deterministic and use the
-                    same parser stack as normal uploads, and AI diagnostics can propose a system-level fix.
+                    same parser stack as normal uploads, and advanced diagnostics can propose a system-level fix.
                 </p>
             </div>
 
@@ -302,11 +302,11 @@ export default function TroubleshootPage() {
                             onChange={(e) => setAnalyzeWithAgent(e.target.checked)}
                         />
                         <span className="toggle-track" />
-                        <span className="toggle-label">Run agent diagnostics</span>
+                        <span className="toggle-label">Run advanced diagnostics</span>
                     </label>
                     {!agentAvailable && analyzeWithAgent && (
                         <span style={{ color: 'var(--warning)', fontSize: '0.82rem' }}>
-                            Agent not configured.{' '}
+                            Provider not configured.{' '}
                             <Link
                                 href="/settings"
                                 style={{
@@ -317,13 +317,13 @@ export default function TroubleshootPage() {
                             >
                                 Go to Settings
                             </Link>{' '}
-                            to set up your AI provider.
+                            to set up your provider.
                         </span>
                     )}
                 </div>
                 {analyzeWithAgent && (
                     <div style={{ marginTop: '0.9rem' }}>
-                        <label className="form-label">Agent Troubleshooting Notes (Optional)</label>
+                        <label className="form-label">Troubleshooting Notes (Optional)</label>
                         <textarea
                             className="form-textarea"
                             rows={3}
@@ -509,7 +509,7 @@ export default function TroubleshootPage() {
                                         background: 'var(--bg-input)',
                                     }}
                                 >
-                                    <div style={{ fontWeight: 700, marginBottom: '0.35rem' }}>AI Recommended Fix</div>
+                                    <div style={{ fontWeight: 700, marginBottom: '0.35rem' }}>Recommended Fix</div>
                                     <div style={{ color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
                                         {aiFixPlan.title || 'Model generated a troubleshooting fix plan.'}
                                     </div>
@@ -674,7 +674,7 @@ export default function TroubleshootPage() {
             <div className="card card-accent-left" style={{ marginTop: '2rem' }}>
                 <div className="section-header" style={{ marginBottom: '0.75rem', paddingBottom: '0.6rem' }}>
                     <div className="section-header-icon">💭</div>
-                    <h2>AI Model Thinking</h2>
+                    <h2>Processing Log</h2>
                 </div>
                 <div style={{ color: 'var(--text-muted)', fontSize: '0.84rem', marginBottom: '0.6rem' }}>
                     Live analysis log while troubleshooting runs.

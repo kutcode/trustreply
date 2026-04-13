@@ -12,7 +12,7 @@ const AGENT_MODES = [
   {
     name: 'agent',
     label: 'Agent',
-    description: 'AI-first mode: agent handles all answers using document context + KB and flags uncertain fields (no semantic auto-match fallback).',
+    description: 'Full-analysis mode: handles all answers using document context + KB and flags uncertain fields (no semantic auto-match fallback).',
   },
 ];
 
@@ -110,14 +110,14 @@ export default function ConfigPanel({
               onClick={() => onProviderChange('openai')}
               type="button"
             >
-              OpenAI — {openaiModel || 'gpt-4.1-nano'}
+              Provider A — {openaiModel || 'gpt-4.1-nano'}
             </button>
             <button
               className={`btn ${selectedProvider === 'anthropic' ? 'btn-primary' : 'btn-secondary'} btn-sm`}
               onClick={() => onProviderChange('anthropic')}
               type="button"
             >
-              Claude — {anthropicModel || 'claude-sonnet-4-6'}
+              Provider B — {anthropicModel || 'claude-sonnet-4-6'}
             </button>
           </div>
         </div>
@@ -168,7 +168,7 @@ export default function ConfigPanel({
                 <Link href="/settings" style={{ color: 'var(--warning)', textDecoration: 'underline', textUnderlineOffset: '0.15rem' }}>
                   Settings
                 </Link>{' '}
-                to set up your AI provider credentials.
+                to set up your provider credentials.
               </div>
             )}
 
@@ -242,7 +242,7 @@ export default function ConfigPanel({
               </select>
             </div>
             <div style={{ flex: '2 1 360px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-              Pre-fill answers from a previously saved template before AI/KB matching runs.
+              Pre-fill answers from a previously saved template before matching runs.
             </div>
           </div>
         </div>

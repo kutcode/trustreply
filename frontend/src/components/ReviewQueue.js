@@ -244,7 +244,7 @@ export default function ReviewQueue({
                           className="btn btn-sm"
                           style={{ background: 'var(--surface-alt)', fontSize: '0.72rem', padding: '0.15rem 0.4rem' }}
                           onClick={() => toggleReasoning(qr.id)}
-                          title="Show AI reasoning"
+                          title="Show reasoning"
                           aria-expanded={expandedReasoning.has(qr.id)}
                         >
                           {expandedReasoning.has(qr.id) ? '▾ Why' : '▸ Why'}
