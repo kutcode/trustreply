@@ -5,10 +5,16 @@ import os
 import threading
 from pathlib import Path
 from pydantic import field_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="QF_",
+        env_file=Path(__file__).resolve().parent.parent.parent / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     @field_validator("allowed_email_domains", "cors_origins", mode="before")
     @classmethod
@@ -106,13 +112,6 @@ class Settings(BaseSettings):
 
     # Server
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"]
-
-    class Config:
-        env_prefix = "QF_"
-        env_file = Path(__file__).resolve().parent.parent.parent / ".env"
-        env_file_encoding = "utf-8"
-        extra = "ignore"
-
 
 settings = Settings()
 

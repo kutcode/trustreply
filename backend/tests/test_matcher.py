@@ -105,7 +105,7 @@ async def test_reuses_resolved_flagged_answer(seeded_db):
         extracted_question="1. Describe your disaster recovery plan.",
         resolved=True,
         resolved_answer="We maintain a documented recovery plan.",
-        resolved_at=datetime.datetime.utcnow(),
+        resolved_at=datetime.datetime.now(datetime.timezone.utc),
     ))
     await seeded_db.commit()
 

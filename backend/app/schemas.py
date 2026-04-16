@@ -27,8 +27,7 @@ class QAPairResponse(BaseModel):
     created_at: datetime.datetime
     updated_at: datetime.datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class QAPairListResponse(BaseModel):
@@ -69,8 +68,7 @@ class JobResponse(BaseModel):
     uploaded_at: datetime.datetime
     completed_at: datetime.datetime | None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class JobListResponse(BaseModel):
@@ -141,8 +139,7 @@ class SourceKBPair(BaseModel):
     answer: str
     category: str | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class QuestionResultResponse(BaseModel):
@@ -164,8 +161,7 @@ class QuestionResultResponse(BaseModel):
     created_at: datetime.datetime
     assigned_to: str | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class QuestionResultListResponse(BaseModel):
@@ -285,8 +281,7 @@ class AuditLogResponse(BaseModel):
     before_value: str | None
     after_value: str | None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AuditLogListResponse(BaseModel):
@@ -393,8 +388,7 @@ class DuplicateReviewItem(BaseModel):
     source: str
     created_at: datetime.datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DuplicateReviewListResponse(BaseModel):

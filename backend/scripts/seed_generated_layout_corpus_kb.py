@@ -241,7 +241,7 @@ def seed_database(rows: list[dict[str, str]]) -> int:
             return 0
 
         embeddings = compute_embeddings([row["question"] for row in missing_rows])
-        now = dt.datetime.utcnow().isoformat()
+        now = dt.datetime.now(dt.timezone.utc).isoformat()
         payload = [
             (
                 row["category"],
