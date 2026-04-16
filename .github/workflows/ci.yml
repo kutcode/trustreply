@@ -36,7 +36,7 @@ jobs:
       - name: Run backend tests
         run: pytest
       - name: Security scan with pip-audit
-        run: pip install pip-audit==2.10.0 && pip-audit --ignore-vuln CVE-2025-71176 --ignore-vuln CVE-2026-1839
+        run: pip install pip-audit==2.10.0 && pip-audit --ignore-vuln CVE-2026-1839
 
   frontend:
     runs-on: ubuntu-latest
