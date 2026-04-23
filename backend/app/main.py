@@ -304,8 +304,6 @@ async def test_agent_connection(body: AgentModelsRequest):
     )
 
 
-# ── Env-file persistence helper ─────────────────────────────────────
-
 _ENV_FILE_PATH = Path(__file__).resolve().parent.parent / ".env"
 
 # Map schema field names → QF_ env variable names

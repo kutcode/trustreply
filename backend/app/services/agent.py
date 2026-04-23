@@ -823,7 +823,7 @@ async def run_contextual_fill_agent(
 
     original_answers = [item.answer_text for item in items]
 
-    # ── Deduplication: group identical questions, process each unique question once ──
+
     seen_questions: dict[str, int] = {}  # normalized_question -> first work_items index
     duplicate_map: dict[int, int] = {}  # item_index -> canonical item_index
     work_items: list[dict[str, Any]] = []
@@ -898,7 +898,7 @@ async def run_contextual_fill_agent(
         {"question_count": len(work_items)},
     )
 
-    # ── Confidence-based KB routing: skip LLM for high-confidence KB matches ──
+
     kb_direct_threshold = settings.agent_kb_direct_threshold
     kb_routed_count = 0
     llm_work_items: list[dict[str, Any]] = []
@@ -947,7 +947,7 @@ async def run_contextual_fill_agent(
             {"kb_routed": kb_routed_count, "remaining_for_llm": len(llm_work_items)},
         )
 
-    # ── Early exit: all questions resolved by KB, skip LLM entirely ──
+
     if not llm_work_items:
         append_trace(
             trace, "fill", "completed",
@@ -1147,7 +1147,7 @@ async def run_contextual_fill_agent(
 
         return chunk_decisions
 
-    # ── Run all chunks concurrently for maximum speed ──
+
     append_trace(
         trace,
         "fill",
@@ -1232,7 +1232,7 @@ async def run_contextual_fill_agent(
             {"decisions": len(chunk_decisions)},
         )
 
-    # ── Verification stage (conditional) ──
+
     if ordered_decisions and settings.agent_verification_enabled:
         # Smart skip: if average confidence is very high, skip verification to save tokens
         answered_confs = [
@@ -1296,7 +1296,7 @@ async def run_contextual_fill_agent(
                                              str(correction.get("reason", "")) + "]").strip()
                             break
 
-    # ── Propagate answers to duplicate questions (zero extra LLM cost) ──
+
     for dup_idx, canonical_idx in duplicate_map.items():
         items[dup_idx].answer_text = items[canonical_idx].answer_text
 

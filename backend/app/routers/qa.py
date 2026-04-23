@@ -14,7 +14,7 @@ from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
-from app.database import get_db, async_session
+from app.database import get_db
 from app.models import QAPair, DuplicateReview
 from app.schemas import (
     QAPairCreate, QAPairUpdate, QAPairResponse,
@@ -32,29 +32,13 @@ from app.utils.embeddings import (
 )
 from app.services.audit import log_audit
 from app.services.duplicate_classifier import classify_duplicate_pairs, get_llm_model_name
-from app.services.duplicate_flag import check_and_flag_duplicates
 from app.config import settings
+from app.utils.background import run_duplicate_check
 
 router = APIRouter(prefix="/api/qa", tags=["qa"])
 
-# Semantic dedup threshold is loaded from settings.semantic_dedup_threshold.
-# Questions above this similarity are treated as "same question, different wording"
-# and the existing entry is updated instead of creating a new one.
-
-
-async def _run_duplicate_check(entry_ids: list[int]) -> None:
-    """Background task to check new entries for duplicates."""
-    try:
-        async with async_session() as db:
-            await check_and_flag_duplicates(db, entry_ids)
-    except Exception:
-        import logging
-        logging.getLogger(__name__).exception("Background duplicate check failed for entry_ids=%s", entry_ids)
-
 
 def _require_category(category: str | None) -> str:
-    """Normalize and validate category values."""
-
     value = (category or "").strip()
     if not value:
         raise HTTPException(status_code=400, detail="Category is required")
@@ -106,8 +90,6 @@ def _normalize_import_record(record: dict) -> dict[str, str]:
 
 
 def _clean_import_value(value: object | None) -> str:
-    """Convert import values to normalized strings."""
-
     if value is None:
         return ""
     if isinstance(value, str):
@@ -238,7 +220,7 @@ async def create_qa_pair(
         )
         await db.commit()
         await db.refresh(existing)
-        background_tasks.add_task(_run_duplicate_check, [existing.id])
+        background_tasks.add_task(run_duplicate_check, [existing.id])
         return existing
 
     # NOTE: There is a small race window between the duplicate check and the insert.
@@ -261,11 +243,10 @@ async def create_qa_pair(
     )
     await db.commit()
     await db.refresh(qa)
-    background_tasks.add_task(_run_duplicate_check, [qa.id])
+    background_tasks.add_task(run_duplicate_check, [qa.id])
     return qa
 
 
-# ── KB Deduplication helpers ──────────────────────────────────────
 
 
 def _find(parent: list[int], i: int) -> int:
@@ -421,7 +402,6 @@ async def bulk_merge_duplicates(
     return BulkMergeResponse(merged_clusters=len(data.merges), total_deleted=total_deleted)
 
 
-# ── Duplicate Review endpoints ───────────────────────────────────
 
 
 @router.post("/duplicates/classify", response_model=DuplicateClassifyResponse)
@@ -1044,7 +1024,7 @@ async def import_qa_pairs(
             await db.commit()
 
             if all_entry_ids and background_tasks is not None:
-                background_tasks.add_task(_run_duplicate_check, all_entry_ids)
+                background_tasks.add_task(run_duplicate_check, all_entry_ids)
     except HTTPException:
         raise  # re-raise HTTP exceptions as-is
     except Exception as e:

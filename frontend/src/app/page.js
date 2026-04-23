@@ -3,6 +3,7 @@
 import React from 'react';
 import Link from 'next/link';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import useToast from '@/hooks/useToast';
 import {
   uploadDocument,
   uploadDocuments,
@@ -82,7 +83,7 @@ export default function UploadPage() {
   const [agentInstructions, setAgentInstructions] = useState('');
   const [agentAvailable, setAgentAvailable] = useState(false);
   const [maxBulkFiles, setMaxBulkFiles] = useState(FALLBACK_MAX_BULK_FILES);
-  const [toast, setToast] = useState(null);
+  const { toast, showToast } = useToast();
   const [questionResults, setQuestionResults] = useState(null);
   const [auditLogs, setAuditLogs] = useState(null);
   const [showAuditTrail, setShowAuditTrail] = useState(false);
@@ -96,18 +97,6 @@ export default function UploadPage() {
   const pollRef = useRef(null);
   const thinkingRef = useRef(null);
   const pollingInFlight = useRef(false);
-
-  const toastTimeout = useRef(null);
-  useEffect(() => {
-    return () => {
-      if (toastTimeout.current) clearTimeout(toastTimeout.current);
-    };
-  }, []);
-  const showToast = useCallback((msg, type = 'info') => {
-    if (toastTimeout.current) clearTimeout(toastTimeout.current);
-    setToast({ message: msg, type });
-    toastTimeout.current = setTimeout(() => setToast(null), 4000);
-  }, []);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) {

@@ -11,9 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database import get_db, async_session
+from app.database import get_db
 from app.models import FlaggedQuestion, ProcessingJob, QAPair
-from app.services.duplicate_flag import check_and_flag_duplicates
 from app.schemas import (
     FlaggedQuestionResponse, FlaggedQuestionResolve,
     FlaggedQuestionListResponse,
@@ -25,18 +24,9 @@ from app.utils.embeddings import compute_embedding, embedding_to_bytes
 from app.utils.questions import clean_display_question, normalize_question_key
 from app.routers.qa import _require_category
 from app.services.audit import log_audit
+from app.utils.background import run_duplicate_check
 
 router = APIRouter(prefix="/api/flagged", tags=["flagged"])
-
-
-async def _run_duplicate_check_flagged(entry_ids: list[int]) -> None:
-    """Background task to check new KB entries (from flagged resolution) for duplicates."""
-    try:
-        async with async_session() as db:
-            await check_and_flag_duplicates(db, entry_ids)
-    except Exception:
-        import logging
-        logging.getLogger(__name__).exception("Background duplicate check failed for entry_ids=%s", entry_ids)
 
 
 async def _load_duplicate_group(
@@ -462,7 +452,7 @@ async def resolve_flagged(
 
     # Trigger background duplicate check for new KB entries
     if new_kb_entry_ids:
-        background_tasks.add_task(_run_duplicate_check_flagged, new_kb_entry_ids)
+        background_tasks.add_task(run_duplicate_check, new_kb_entry_ids)
 
     await db.refresh(fq)
     job_ids = sorted({duplicate.job_id for duplicate in duplicates})

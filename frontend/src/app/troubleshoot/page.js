@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import useToast from '@/hooks/useToast';
 import { getSettings, saveSettings, troubleshootDocument } from '@/lib/api';
 
 const FALLBACK_REASON_LABELS = {
@@ -43,7 +44,7 @@ export default function TroubleshootPage() {
     const [defaultParserProfile, setDefaultParserProfile] = useState('default');
     const [applyingFix, setApplyingFix] = useState(false);
     const [thinkingLines, setThinkingLines] = useState([]);
-    const [toast, setToast] = useState(null);
+    const { toast, showToast } = useToast();
     const [expandedIndex, setExpandedIndex] = useState(null);
     const thinkingTickerRef = useRef(null);
 
@@ -58,18 +59,6 @@ export default function TroubleshootPage() {
     const profilesWithQuestions = expandedResult?.profiles.filter((profile) => profile.question_count > 0).length || 0;
     const bestQuestionCount = recommendedProfile?.question_count || 0;
     const aiFixPlan = expandedResult?.agent_analysis?.fix_plan || null;
-
-    const toastTimeout = useRef(null);
-    useEffect(() => {
-        return () => {
-            if (toastTimeout.current) clearTimeout(toastTimeout.current);
-        };
-    }, []);
-    const showToast = (msg, type = 'info') => {
-        if (toastTimeout.current) clearTimeout(toastTimeout.current);
-        setToast({ message: msg, type });
-        toastTimeout.current = setTimeout(() => setToast(null), 4000);
-    };
 
     useEffect(() => {
         getSettings()

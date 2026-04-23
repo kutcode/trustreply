@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import useToast from '@/hooks/useToast';
 import { listFingerprints, updateFingerprint, deleteFingerprint, getApiBaseHint } from '@/lib/api';
 import LoadingSkeleton from '@/components/LoadingSkeleton';
 
@@ -12,22 +13,10 @@ function formatDate(ts) {
 export default function LearnedFormatsContent() {
     const [fingerprints, setFingerprints] = useState(null);
     const [total, setTotal] = useState(0);
-    const [toast, setToast] = useState(null);
+    const { toast, showToast } = useToast();
     const [editingId, setEditingId] = useState(null);
     const [editName, setEditName] = useState('');
     const [confirmDelete, setConfirmDelete] = useState(null);
-
-    const toastTimeout = useRef(null);
-    useEffect(() => {
-        return () => {
-            if (toastTimeout.current) clearTimeout(toastTimeout.current);
-        };
-    }, []);
-    const showToast = useCallback((msg, type = 'info') => {
-        if (toastTimeout.current) clearTimeout(toastTimeout.current);
-        setToast({ message: msg, type });
-        toastTimeout.current = setTimeout(() => setToast(null), 4000);
-    }, []);
 
     const loadData = useCallback(async () => {
         try { const data = await listFingerprints(); setFingerprints(data.items || []); setTotal(data.total || 0); }

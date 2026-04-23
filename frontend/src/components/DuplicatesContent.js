@@ -5,7 +5,8 @@
 // has its own internal tabs (Review Queue / Scan & Merge).
 // We import and re-render it here, stripping the page-container wrapper.
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useEffect } from 'react';
+import useToast from '@/hooks/useToast';
 import {
     detectDuplicates,
     mergeKBEntries,
@@ -441,18 +442,7 @@ function ReviewQueueTab({ showToast }) {
 
 export default function DuplicatesContent() {
     const [activeTab, setActiveTab] = useState('review');
-    const [toast, setToast] = useState(null);
-    const toastTimeout = useRef(null);
-    useEffect(() => {
-        return () => {
-            if (toastTimeout.current) clearTimeout(toastTimeout.current);
-        };
-    }, []);
-    const showToast = useCallback((msg, type = 'info') => {
-        if (toastTimeout.current) clearTimeout(toastTimeout.current);
-        setToast({ message: msg, type });
-        toastTimeout.current = setTimeout(() => setToast(null), 4000);
-    }, []);
+    const { toast, showToast } = useToast();
 
     return (
         <>

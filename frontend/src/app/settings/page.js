@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
+import { useState, useEffect, useCallback, Suspense } from 'react';
+import useToast from '@/hooks/useToast';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { getSettings, listAgentModels, saveSettings, testAgentConnection } from '@/lib/api';
 import SubTabs from '@/components/SubTabs';
@@ -101,7 +102,7 @@ function SettingsConfigContent() {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [savingProvider, setSavingProvider] = useState(null);
-    const [toast, setToast] = useState(null);
+    const { toast, showToast } = useToast();
     const [similarityThreshold, setSimilarityThreshold] = useState(0.75);
     const [defaultParserProfile, setDefaultParserProfile] = useState('default');
     const [parserProfiles, setParserProfiles] = useState([]);
@@ -127,18 +128,6 @@ function SettingsConfigContent() {
     const [categorySmeMap, setCategorySmeMap] = useState({});
     const [newSmeCategory, setNewSmeCategory] = useState('');
     const [newSmeEmail, setNewSmeEmail] = useState('');
-
-    const toastTimeout = useRef(null);
-    useEffect(() => {
-        return () => {
-            if (toastTimeout.current) clearTimeout(toastTimeout.current);
-        };
-    }, []);
-    const showToast = useCallback((msg, type = 'info') => {
-        if (toastTimeout.current) clearTimeout(toastTimeout.current);
-        setToast({ message: msg, type });
-        toastTimeout.current = setTimeout(() => setToast(null), 4000);
-    }, []);
 
     const fetchModelsForProvider = useCallback(async (providerKey, apiKey = '') => {
         const cfg = PROVIDER_CONFIGS[providerKey];

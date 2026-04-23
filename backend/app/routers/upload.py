@@ -53,7 +53,6 @@ router = APIRouter(prefix="/api", tags=["upload"])
 
 
 def _serialize_run_format(fmt: RunFormat | None) -> dict | None:
-    """Convert a RunFormat dataclass to a JSON-serializable dict."""
     if fmt is None:
         return None
     result: dict = {}
@@ -73,7 +72,6 @@ def _serialize_run_format(fmt: RunFormat | None) -> dict | None:
 
 
 def _deserialize_run_format(data: dict | None) -> RunFormat | None:
-    """Reconstruct a RunFormat from serialized JSON."""
     if not data:
         return None
     fmt = RunFormat()
@@ -81,15 +79,12 @@ def _deserialize_run_format(data: dict | None) -> RunFormat | None:
     fmt.bold = data.get("bold")
     fmt.italic = data.get("italic")
     fmt.underline = data.get("underline")
-    # font_size and color_rgb are stored as strings; generator handles None gracefully
     return fmt
 
 ALLOWED_EXTENSIONS = {".docx", ".pdf", ".csv", ".xlsx", ".xls"}
 
 
 def _clean_optional_form_value(value: str | None) -> str | None:
-    """Normalize optional form values and collapse blanks to None."""
-
     if value is None:
         return None
     cleaned = value.strip()
@@ -469,7 +464,6 @@ async def _process_document(
             source_path = settings.upload_dir / job.stored_filename
             suffix = source_path.suffix.lower()
 
-            # ── Format fingerprint auto-detection ─────────────────────
             effective_profile = job.parser_profile_name or settings.default_parser_profile
             effective_hints = settings.parser_hint_overrides or None
             fingerprint_match = await find_matching_fingerprint(source_path, db)
@@ -514,7 +508,6 @@ async def _process_document(
             )
             await db.commit()  # Commit fingerprint + parser results together
 
-            # ── Template pre-fill ─────────────────────────────────────
             if template_id is not None:
                 from app.models import QuestionnaireTemplate, TemplateAnswer
                 template = await db.get(QuestionnaireTemplate, template_id)
@@ -711,8 +704,7 @@ async def _process_document(
             job.status = "done"
             job.completed_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
-            # ── Save format fingerprint ───────────────────────────────
-            if len(items) > 0:
+            if items:
                 try:
                     await save_fingerprint(
                         file_path=source_path,
@@ -1133,7 +1125,6 @@ async def download_result(job_id: int, db: AsyncSession = Depends(get_db)):
     )
 
 
-# ── Review Queue Endpoints ────────────────────────────────────────────
 
 
 @router.get("/jobs/{job_id}/questions", response_model=QuestionResultListResponse)

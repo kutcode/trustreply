@@ -92,7 +92,7 @@ def generate_filled_docx(
         elif item.item_type == "paragraph":
             para_items[item.location["para_idx"]] = item
 
-    # ── Fill table cells ─────────────────────────────────────────────
+
     for item in table_items:
         table_idx = item.location["table_idx"]
         answer_row_idx = item.location.get("answer_row_idx", item.location.get("row_idx"))
@@ -152,7 +152,7 @@ def generate_filled_docx(
             run = para.add_run(output_text)
             _apply_formatting(run, fmt)
 
-    # ── Fill paragraph-based answers ─────────────────────────────────
+
     # We need to insert answers AFTER the question paragraph.
     # Work backwards to avoid index shifting.
     para_indices = sorted(para_items.keys(), reverse=True)

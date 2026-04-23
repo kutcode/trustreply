@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import useToast from '@/hooks/useToast';
 import {
     listQAPairs,
     createQAPair,
@@ -23,7 +24,7 @@ export default function KBEntriesContent() {
     const [search, setSearch] = useState('');
     const [categoryFilter, setCategoryFilter] = useState('');
     const [categories, setCategories] = useState([]);
-    const [toast, setToast] = useState(null);
+    const { toast, showToast } = useToast();
 
     const [showModal, setShowModal] = useState(false);
     const [editingId, setEditingId] = useState(null);
@@ -35,18 +36,6 @@ export default function KBEntriesContent() {
     const [importDragover, setImportDragover] = useState(false);
     const [importing, setImporting] = useState(false);
     const [contradictionCount, setContradictionCount] = useState(0);
-
-    const toastTimeout = useRef(null);
-    useEffect(() => {
-        return () => {
-            if (toastTimeout.current) clearTimeout(toastTimeout.current);
-        };
-    }, []);
-    const showToast = useCallback((msg, type = 'info') => {
-        if (toastTimeout.current) clearTimeout(toastTimeout.current);
-        setToast({ message: msg, type });
-        toastTimeout.current = setTimeout(() => setToast(null), 4000);
-    }, []);
 
     const loadData = useCallback(async () => {
         try {

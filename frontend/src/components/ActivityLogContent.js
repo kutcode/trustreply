@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import useToast from '@/hooks/useToast';
 import { listAuditLogs, getApiBaseHint } from '@/lib/api';
 import LoadingSkeleton from '@/components/LoadingSkeleton';
 
@@ -33,23 +34,11 @@ export default function ActivityLogContent() {
     const [total, setTotal] = useState(0);
     const [page, setPage] = useState(1);
     const [pageSize] = useState(30);
-    const [toast, setToast] = useState(null);
+    const { toast, showToast } = useToast();
     const [actionFilter, setActionFilter] = useState('');
     const [entityFilter, setEntityFilter] = useState('');
     const [jobIdFilter, setJobIdFilter] = useState('');
     const [expandedId, setExpandedId] = useState(null);
-
-    const toastTimeout = useRef(null);
-    useEffect(() => {
-        return () => {
-            if (toastTimeout.current) clearTimeout(toastTimeout.current);
-        };
-    }, []);
-    const showToast = useCallback((msg, type = 'info') => {
-        if (toastTimeout.current) clearTimeout(toastTimeout.current);
-        setToast({ message: msg, type });
-        toastTimeout.current = setTimeout(() => setToast(null), 4000);
-    }, []);
 
     const loadData = useCallback(async () => {
         try {

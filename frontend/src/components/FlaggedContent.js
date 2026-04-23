@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import useToast from '@/hooks/useToast';
 import {
     listFlaggedQuestions,
     resolveFlaggedQuestion,
@@ -19,7 +20,7 @@ export default function FlaggedContent() {
     const [total, setTotal] = useState(0);
     const [filter, setFilter] = useState('unresolved');
     const [searchQuery, setSearchQuery] = useState('');
-    const [toast, setToast] = useState(null);
+    const { toast, showToast } = useToast();
     const [resolving, setResolving] = useState(null);
     const [resolveAnswer, setResolveAnswer] = useState('');
     const [resolveCategory, setResolveCategory] = useState('');
@@ -31,18 +32,6 @@ export default function FlaggedContent() {
     const [deduplicating, setDeduplicating] = useState(false);
     const [selectedIds, setSelectedIds] = useState([]);
     const [confirmAction, setConfirmAction] = useState(null);
-
-    const toastTimeout = useRef(null);
-    useEffect(() => {
-        return () => {
-            if (toastTimeout.current) clearTimeout(toastTimeout.current);
-        };
-    }, []);
-    const showToast = useCallback((msg, type = 'info') => {
-        if (toastTimeout.current) clearTimeout(toastTimeout.current);
-        setToast({ message: msg, type });
-        toastTimeout.current = setTimeout(() => setToast(null), 4000);
-    }, []);
 
     const loadData = useCallback(async () => {
         try {
