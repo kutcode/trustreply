@@ -8,8 +8,6 @@ import datetime
 import email.utils
 import json
 import random
-import re
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,217 +20,41 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import QAPair
+from app.services.agent_config import (  # noqa: F401 - re-exported for public API
+    AgentRuntimeConfig,
+    default_agent_runtime_config,
+    is_agent_available,
+    list_agent_modes,
+    normalize_agent_mode,
+    normalize_provider as _normalize_provider,
+)
+from app.services.agent_constants import (  # noqa: F401 - re-exported for public API
+    AGENT_API_BASE_BACKOFF_SECONDS,
+    AGENT_API_CALL_SEMAPHORE,
+    AGENT_API_MAX_BACKOFF_SECONDS,
+    AGENT_API_MAX_PARALLEL_CALLS,
+    AGENT_API_MAX_RETRIES,
+    AGENT_MODE_AGENT,
+    AGENT_MODE_OFF,
+    AGENT_MODES,
+    PROVIDER_ANTHROPIC,
+    PROVIDER_OPENAI,
+    PROVIDER_OPENAI_COMPATIBLE,
+)
+from app.services.agent_parsing import (  # noqa: F401 - re-exported for public API
+    append_trace,
+    chunked as _chunked,
+    content_to_text as _content_to_text,
+    estimate_tokens as _estimate_tokens,
+    extract_json_object as _extract_json_object,
+    response_error_detail as _response_error_detail,
+    response_json_or_none as _response_json_or_none,
+)
 from app.services.parser import ExtractedItem
 from app.utils.embeddings import bytes_to_embedding, compute_embeddings
 
-AGENT_MODE_OFF = "off"
-AGENT_MODE_AGENT = "agent"
-AGENT_MODES = (AGENT_MODE_OFF, AGENT_MODE_AGENT)
-
-# Runtime provider identifiers.
-PROVIDER_OPENAI_COMPATIBLE = "openai-compatible"
-PROVIDER_OPENAI = "openai"
-PROVIDER_ANTHROPIC = "anthropic"
-
-# Backward-compat aliases for old modes stored in DB or sent by API clients.
-_MODE_ALIASES = {"assist": AGENT_MODE_AGENT, "full": AGENT_MODE_AGENT}
-_PROVIDER_ALIASES = {
-    "openai-compatible": PROVIDER_OPENAI_COMPATIBLE,
-    "openai_compatible": PROVIDER_OPENAI_COMPATIBLE,
-    "openai": PROVIDER_OPENAI,
-    "anthropic": PROVIDER_ANTHROPIC,
-    "claude": PROVIDER_ANTHROPIC,
-}
-
-AGENT_API_MAX_RETRIES = 5
-AGENT_API_BASE_BACKOFF_SECONDS = 1.0
-AGENT_API_MAX_BACKOFF_SECONDS = 30.0
-AGENT_API_MAX_PARALLEL_CALLS = 8
-_AGENT_API_CALL_SEMAPHORE = asyncio.Semaphore(AGENT_API_MAX_PARALLEL_CALLS)
-
-
-@dataclass(frozen=True)
-class AgentRuntimeConfig:
-    """Provider/runtime values used for an individual agent run."""
-
-    api_base: str
-    api_key: str
-    model: str
-    provider: str = PROVIDER_OPENAI_COMPATIBLE
-
-
-def _normalize_provider(provider: str | None) -> str:
-    """Normalize provider names so UI aliases map to runtime behavior."""
-
-    value = (provider or "").strip().lower()
-    return _PROVIDER_ALIASES.get(value, value or PROVIDER_OPENAI_COMPATIBLE)
-
-
-def default_agent_runtime_config() -> AgentRuntimeConfig:
-    """Build runtime config from environment-backed application settings."""
-
-    return AgentRuntimeConfig(
-        api_base=settings.agent_api_base.strip(),
-        api_key=settings.agent_api_key.strip(),
-        model=settings.agent_model.strip(),
-        provider=_normalize_provider(settings.agent_provider.strip()),
-    )
-
-
-def list_agent_modes() -> list[dict[str, str]]:
-    """Return the UI-facing list of supported agent modes."""
-
-    return [
-        {
-            "name": AGENT_MODE_OFF,
-            "label": "Semantic Only",
-            "description": "Use only knowledge-base semantic matching.",
-        },
-        {
-            "name": AGENT_MODE_AGENT,
-            "label": "Agent",
-            "description": "AI-first mode. Agent decides all answers using document context + KB and flags uncertain fields (no semantic auto-match fallback).",
-        },
-    ]
-
-
-def normalize_agent_mode(mode: str | None) -> str:
-    """Normalize a requested agent mode and validate support."""
-
-    normalized = (mode or settings.agent_default_mode or AGENT_MODE_OFF).strip().lower()
-    normalized = _MODE_ALIASES.get(normalized, normalized)
-    if normalized not in AGENT_MODES:
-        raise ValueError(f"Unknown agent mode '{mode}'")
-    return normalized
-
-
-def is_agent_available(runtime_config: AgentRuntimeConfig | None = None) -> bool:
-    """Return whether agent calls are fully configured and enabled."""
-
-    config = runtime_config or default_agent_runtime_config()
-    if runtime_config is None and not settings.agent_enabled:
-        return False
-    return bool(
-        config.api_base.strip()
-        and config.api_key.strip()
-        and config.model.strip()
-    )
-
-
-def append_trace(
-    trace: list[dict[str, Any]],
-    step: str,
-    status: str,
-    message: str,
-    data: dict[str, Any] | None = None,
-) -> None:
-    """Append a structured trace event for frontend rendering."""
-
-    event: dict[str, Any] = {
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat(),
-        "step": step,
-        "status": status,
-        "message": message,
-    }
-    if data:
-        event["data"] = data
-    trace.append(event)
-
-
-def _chunked(items: list[Any], size: int) -> list[list[Any]]:
-    """Split a list into fixed-size chunks."""
-
-    if size <= 0:
-        size = 1
-    return [items[i:i + size] for i in range(0, len(items), size)]
-
-
-def _estimate_tokens(text: str) -> int:
-    """Rough token count estimate (~1 token per 4 chars for English text)."""
-    return max(1, len(text) // 4)
-
-
-def _extract_json_object(text: str) -> dict[str, Any]:
-    """Parse LLM content into a JSON object, handling code fences."""
-
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-
-    try:
-        parsed = json.loads(cleaned)
-        if isinstance(parsed, dict):
-            return parsed
-    except json.JSONDecodeError:
-        pass
-
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start >= 0 and end > start:
-        try:
-            parsed = json.loads(cleaned[start:end + 1])
-            if isinstance(parsed, dict):
-                return parsed
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"Agent response contained braces but was not valid JSON: {exc}"
-            ) from exc
-
-    raise ValueError("Agent response was not valid JSON object text")
-
-
-def _content_to_text(content: Any) -> str:
-    """Normalize chat message content payloads to plain text."""
-
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict):
-                text = item.get("text")
-                if isinstance(text, str) and text.strip():
-                    parts.append(text.strip())
-        return "\n".join(parts)
-    return str(content)
-
-
-def _response_json_or_none(response: httpx.Response) -> dict[str, Any] | None:
-    """Best-effort parse of an HTTP response JSON body."""
-
-    try:
-        data = response.json()
-    except ValueError:
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _response_error_detail(response: httpx.Response) -> str:
-    """Extract a human-friendly error message from provider responses."""
-
-    payload = _response_json_or_none(response)
-    if payload:
-        error = payload.get("error")
-        if isinstance(error, dict):
-            message = str(error.get("message") or "").strip()
-            code = str(error.get("code") or error.get("type") or "").strip()
-            if message and code:
-                return f"{message} ({code})"
-            if message:
-                return message
-            if code:
-                return code
-        if isinstance(error, str) and error.strip():
-            return error.strip()
-        message = payload.get("message")
-        if isinstance(message, str) and message.strip():
-            return message.strip()
-
-    text = (response.text or "").strip()
-    if text:
-        return text[:300]
-    return f"HTTP {response.status_code}"
+# Legacy alias. External call sites still reference this; keep it for API stability.
+_AGENT_API_CALL_SEMAPHORE = AGENT_API_CALL_SEMAPHORE
 
 
 def _is_non_retriable_quota_error(response: httpx.Response) -> bool:

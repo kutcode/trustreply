@@ -6,8 +6,6 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   uploadDocument,
   uploadDocuments,
-  getJob,
-  getBatchJobs,
   listJobs,
   downloadJobResult,
   downloadBatchResult,
@@ -16,6 +14,7 @@ import {
   listAuditLogs,
   listTemplates,
 } from '@/lib/api';
+import { useJobPolling, isFinishedStatus, jobNeedsReview } from '@/hooks/useJobPolling';
 
 import Toast from '@/components/Toast';
 import UploadZone from '@/components/UploadZone';
@@ -25,26 +24,8 @@ import ReviewQueue from '@/components/ReviewQueue';
 const SUPPORTED_EXTENSIONS = new Set(['docx', 'pdf', 'xlsx', 'xls', 'csv']);
 const FALLBACK_MAX_BULK_FILES = 50;
 
-const SESSION_JOB_KEY = 'trustreply_current_job_id';
-const SESSION_BATCH_KEY = 'trustreply_current_batch_id';
-
-function isFinishedStatus(status) {
-  return status === 'done' || status === 'error';
-}
-
 function shortBatchId(batchId) {
   return batchId ? batchId.slice(0, 8) : '';
-}
-
-function jobNeedsReview(job) {
-  return (
-    job.status === 'done'
-    && (
-      (job.flagged_questions_count || 0) > 0
-      || job.fallback_recommended
-      || job.total_questions === 0
-    )
-  );
 }
 
 function getJobStatusMeta(job) {
@@ -74,8 +55,6 @@ function formatThinkingLine(event, prefix = '') {
 export default function UploadPage() {
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
-  const [currentJob, setCurrentJob] = useState(null);
-  const [currentBatch, setCurrentBatch] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [selectedParserProfile, setSelectedParserProfile] = useState('default');
   const [selectedAgentMode, setSelectedAgentMode] = useState('agent');
@@ -93,9 +72,7 @@ export default function UploadPage() {
   const [openaiModel, setOpenaiModel] = useState('');
   const [anthropicModel, setAnthropicModel] = useState('');
   const [selectedProvider, setSelectedProvider] = useState(null);
-  const pollRef = useRef(null);
   const thinkingRef = useRef(null);
-  const pollingInFlight = useRef(false);
 
   const toastTimeout = useRef(null);
   useEffect(() => {
@@ -109,18 +86,46 @@ export default function UploadPage() {
     toastTimeout.current = setTimeout(() => setToast(null), 4000);
   }, []);
 
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
-
   const refreshJobs = useCallback(() => {
     listJobs()
       .then((data) => setJobs(data.items || []))
       .catch(() => { });
   }, []);
+
+  const {
+    currentJob,
+    currentBatch,
+    startJobPolling,
+    startBatchPolling,
+    stopPolling,
+    clearCurrent,
+  } = useJobPolling({
+    onJobDone: (job, { needsReview }) => {
+      showToast(
+        needsReview
+          ? `Warning: Document processed with ${job.flagged_questions_count || 0} question(s) needing review.`
+          : 'Document processed successfully!',
+        needsReview ? 'info' : 'success',
+      );
+      refreshJobs();
+    },
+    onJobError: (job) => {
+      showToast(`Error: ${job.error_message || 'Unknown error'}`, 'error');
+      refreshJobs();
+    },
+    onBatchComplete: (_batch, { doneCount, errorCount, reviewCount }) => {
+      let message;
+      if (errorCount > 0) {
+        message = `Batch complete: ${doneCount} done, ${errorCount} errors`;
+      } else if (reviewCount > 0) {
+        message = `Warning: Batch complete: ${reviewCount} file(s) need review before use`;
+      } else {
+        message = `Batch complete: ${doneCount} documents processed`;
+      }
+      showToast(message, errorCount > 0 || reviewCount > 0 ? 'info' : 'success');
+      refreshJobs();
+    },
+  });
 
   useEffect(() => {
     refreshJobs();
@@ -145,34 +150,6 @@ export default function UploadPage() {
     listTemplates().then((data) => setTemplatesList(data.items || [])).catch(() => { });
   }, []);
 
-  // Restore current job/batch from sessionStorage on mount (tab switch persistence)
-  useEffect(() => {
-    const savedJobId = sessionStorage.getItem(SESSION_JOB_KEY);
-    const savedBatchId = sessionStorage.getItem(SESSION_BATCH_KEY);
-
-    if (savedBatchId) {
-      getBatchJobs(savedBatchId)
-        .then((batch) => {
-          setCurrentBatch(batch);
-          const allDone = batch.items.every((j) => isFinishedStatus(j.status));
-          if (!allDone) {
-            pollRef.current = setInterval(() => pollBatch(savedBatchId), 1500);
-          }
-        })
-        .catch(() => sessionStorage.removeItem(SESSION_BATCH_KEY));
-    } else if (savedJobId) {
-      getJob(Number(savedJobId))
-        .then((job) => {
-          setCurrentJob(job);
-          if (!isFinishedStatus(job.status)) {
-            pollRef.current = setInterval(() => pollJob(job.id), 1500);
-          }
-        })
-        .catch(() => sessionStorage.removeItem(SESSION_JOB_KEY));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // ── Audit Trail ─────────────────────────────────────────────
 
   const loadAuditLogs = useCallback(async (jobId) => {
@@ -195,6 +172,11 @@ export default function UploadPage() {
     }
   }, []);
 
+  const clearCurrentResults = useCallback(() => {
+    clearCurrent();
+    setQuestionResults(null);
+  }, [clearCurrent]);
+
   const handleResultsChange = useCallback(() => {
     if (currentJob) {
       loadQuestionResults(currentJob.id);
@@ -211,74 +193,6 @@ export default function UploadPage() {
   const handleTemplatesRefresh = useCallback(() => {
     listTemplates().then((data) => setTemplatesList(data.items || [])).catch(() => { });
   }, []);
-
-  const pollJob = useCallback(async (jobId) => {
-    if (pollingInFlight.current) return;
-    pollingInFlight.current = true;
-    try {
-      const job = await getJob(jobId);
-      setCurrentJob(job);
-
-      if (job.status === 'done') {
-        stopPolling();
-        if (jobNeedsReview(job)) {
-          showToast(
-            `Warning: Document processed with ${job.flagged_questions_count || 0} question(s) needing review.`,
-            'info',
-          );
-        } else {
-          showToast('Document processed successfully!', 'success');
-        }
-        refreshJobs();
-      } else if (job.status === 'error') {
-        stopPolling();
-        showToast(`Error: ${job.error_message || 'Unknown error'}`, 'error');
-        refreshJobs();
-      }
-    } catch (err) {
-      stopPolling();
-    } finally {
-      pollingInFlight.current = false;
-    }
-  }, [refreshJobs, showToast, stopPolling]);
-
-  const pollBatch = useCallback(async (batchId) => {
-    if (pollingInFlight.current) return;
-    pollingInFlight.current = true;
-    try {
-      const batch = await getBatchJobs(batchId);
-      setCurrentBatch(batch);
-
-      if (batch.items.every((job) => isFinishedStatus(job.status))) {
-        stopPolling();
-        const doneCount = batch.items.filter((job) => job.status === 'done').length;
-        const errorCount = batch.items.filter((job) => job.status === 'error').length;
-        const reviewCount = batch.items.filter((job) => jobNeedsReview(job)).length;
-        showToast(
-          errorCount > 0
-            ? `Batch complete: ${doneCount} done, ${errorCount} errors`
-            : reviewCount > 0
-              ? `Warning: Batch complete: ${reviewCount} file(s) need review before use`
-              : `Batch complete: ${doneCount} documents processed`,
-          errorCount > 0 || reviewCount > 0 ? 'info' : 'success',
-        );
-        refreshJobs();
-      }
-    } catch (err) {
-      stopPolling();
-    } finally {
-      pollingInFlight.current = false;
-    }
-  }, [refreshJobs, showToast, stopPolling]);
-
-  const clearCurrentResults = useCallback(() => {
-    stopPolling();
-    setCurrentJob(null);
-    setCurrentBatch(null);
-    setQuestionResults(null);
-    sessionStorage.removeItem(SESSION_JOB_KEY);
-    sessionStorage.removeItem(SESSION_BATCH_KEY);
-  }, [stopPolling]);
 
   const handleSelectedFiles = useCallback((incomingFiles) => {
     const candidates = Array.from(incomingFiles || []);
@@ -347,13 +261,9 @@ export default function UploadPage() {
             templateId: selectedTemplateId || undefined,
           },
         );
-        setCurrentBatch(null);
-        setCurrentJob(job);
         setSelectedFiles([]);
-        sessionStorage.setItem(SESSION_JOB_KEY, String(job.id));
-        sessionStorage.removeItem(SESSION_BATCH_KEY);
         showToast('Document uploaded. Processing...', 'info');
-        pollRef.current = setInterval(() => pollJob(job.id), 1500);
+        startJobPolling(job);
       } else {
         const batch = await uploadDocuments(
           selectedFiles,
@@ -364,13 +274,9 @@ export default function UploadPage() {
             agentConfig,
           },
         );
-        setCurrentJob(null);
-        setCurrentBatch(batch);
         setSelectedFiles([]);
-        sessionStorage.setItem(SESSION_BATCH_KEY, batch.batch_id);
-        sessionStorage.removeItem(SESSION_JOB_KEY);
         showToast(`${batch.total} documents uploaded. Processing batch...`, 'info');
-        pollRef.current = setInterval(() => pollBatch(batch.batch_id), 1500);
+        startBatchPolling(batch);
       }
     } catch (err) {
       showToast(`${err.message}`, 'error');
