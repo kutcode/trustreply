@@ -1,4 +1,4 @@
-"""Document generator — writes answers back into .docx and .xlsx files preserving formatting."""
+"""Document generator - writes answers back into .docx and .xlsx files preserving formatting."""
 
 from __future__ import annotations
 from pathlib import Path
@@ -136,7 +136,6 @@ def generate_filled_docx(
             for run in para.runs:
                 run.text = ""
 
-        # Write the answer
         if answer_cell.paragraphs:
             target_para = answer_cell.paragraphs[0]
             for run in target_para.runs:
@@ -199,7 +198,6 @@ def generate_filled_docx(
         r_element.append(t_element)
         new_para_element.append(r_element)
 
-    # Save the filled document
     doc.save(str(output_path))
     return output_path
 
@@ -214,7 +212,6 @@ def generate_docx_from_pdf_items(
     """
     doc = DocxDocument()
 
-    # Add a title
     doc.add_heading("Questionnaire Responses", level=1)
     doc.add_paragraph(
         "This document was generated from a PDF questionnaire. "

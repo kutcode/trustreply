@@ -127,7 +127,7 @@ def _build_runtime_agent_config(
         api_key = api_key or settings.agent_openai_api_key or settings.agent_api_key or ""
         model = model or settings.agent_openai_model or "gpt-4.1-nano"
     else:
-        # Unknown provider — fall back to legacy settings
+        # Unknown provider - fall back to legacy settings
         api_base = api_base or settings.agent_api_base or ""
         api_key = api_key or settings.agent_api_key or ""
         model = model or settings.agent_model or ""
@@ -593,7 +593,7 @@ async def _process_document(
                     status="skipped",
                     message="Semantic matcher skipped in Agent mode (AI-first flow).",
                 )
-            # Defer commit — will happen before agent run or at final save
+            # Defer commit - will happen before agent run or at final save
 
             if job.agent_mode != AGENT_MODE_OFF and is_agent_available(runtime_agent_config):
                 try:
@@ -1019,7 +1019,6 @@ async def list_jobs(
     db: AsyncSession = Depends(get_db),
 ):
     """List all processing jobs with pagination."""
-    # Get total count
     count_result = await db.execute(select(sa_func.count()).select_from(ProcessingJob))
     total = count_result.scalar() or 0
 

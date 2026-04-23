@@ -394,7 +394,6 @@ async def update_settings(body: AppSettingsUpdate):
                 detail="Unsupported agent_provider. Allowed values: openai, anthropic.",
             )
 
-    # Apply each provided field to the in-memory settings singleton.
     payload = body.model_dump(exclude_none=True)
     for field_name, value in payload.items():
         update_setting(field_name, value)

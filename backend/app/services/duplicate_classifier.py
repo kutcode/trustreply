@@ -72,7 +72,6 @@ async def classify_duplicate_pairs(
     runtime_config = _get_runtime_config()
     results: list[dict[str, Any]] = []
 
-    # Process in batches of BATCH_SIZE
     for batch_start in range(0, len(pairs), BATCH_SIZE):
         batch = pairs[batch_start:batch_start + BATCH_SIZE]
 

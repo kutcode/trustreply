@@ -1,4 +1,4 @@
-"""Audit trail service — records user and system actions."""
+"""Audit trail service - records user and system actions."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ async def log_audit(
     """
     Create an audit log entry.
 
-    The caller is responsible for committing the transaction — this keeps
+    The caller is responsible for committing the transaction - this keeps
     audit writes atomic with the action they record.
     """
     entry = AuditLog(

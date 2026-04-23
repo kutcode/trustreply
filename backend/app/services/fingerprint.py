@@ -1,4 +1,4 @@
-"""Format fingerprinting service — remembers questionnaire layouts."""
+"""Format fingerprinting service - remembers questionnaire layouts."""
 
 from __future__ import annotations
 import hashlib
@@ -43,7 +43,6 @@ def _extract_structure(file_path: Path) -> dict[str, Any]:
             if table.rows:
                 cols = len(table.rows[0].cells) if table.rows[0].cells else 0
                 table_cols.append(cols)
-                # Extract header row words
                 for cell in table.rows[0].cells:
                     for w in cell.text.split():
                         stripped = w.strip().lower()

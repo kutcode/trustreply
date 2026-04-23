@@ -51,7 +51,7 @@ def _get_jwks_client() -> PyJWKClient | None:
 def _verify_supabase_jwt(token: str) -> dict | None:
     """Verify a Supabase JWT and return the payload, or None if invalid.
 
-    Tries JWKS (ES256) first — the modern Supabase default.
+    Tries JWKS (ES256) first - the modern Supabase default.
     Falls back to HS256 with the JWT secret for older projects.
     """
     # Try JWKS verification first (ES256)

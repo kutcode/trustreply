@@ -1,4 +1,4 @@
-"""Application configuration — loads from environment variables."""
+"""Application configuration - loads from environment variables."""
 
 import json
 import os

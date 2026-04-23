@@ -1,4 +1,4 @@
-"""Answer correction endpoints — learning from user edits."""
+"""Answer correction endpoints - learning from user edits."""
 
 from __future__ import annotations
 

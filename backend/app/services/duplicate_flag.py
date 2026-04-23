@@ -29,7 +29,6 @@ async def check_and_flag_duplicates(
     if not new_entry_ids:
         return 0
 
-    # Load new entries
     new_result = await db.execute(
         select(QAPair).where(
             QAPair.id.in_(new_entry_ids),
@@ -42,7 +41,6 @@ async def check_and_flag_duplicates(
     if not new_entries:
         return 0
 
-    # Load all existing non-deleted entries with embeddings (excluding the new ones)
     existing_result = await db.execute(
         select(QAPair).where(
             QAPair.deleted_at.is_(None),
@@ -55,11 +53,9 @@ async def check_and_flag_duplicates(
     if not existing_entries:
         return 0
 
-    # Build embedding arrays
     new_embeddings = np.array([bytes_to_embedding(e.embedding) for e in new_entries])
     existing_embeddings = np.array([bytes_to_embedding(e.embedding) for e in existing_entries])
 
-    # Compute cosine similarity (embeddings are already normalized)
     sim_matrix = new_embeddings @ existing_embeddings.T  # shape: (len(new), len(existing))
 
     flagged_count = 0
@@ -74,7 +70,6 @@ async def check_and_flag_duplicates(
             a_id = min(new_entry.id, existing_entry.id)
             b_id = max(new_entry.id, existing_entry.id)
 
-            # Check if this pair already has a DuplicateReview record
             existing_review = await db.execute(
                 select(DuplicateReview).where(
                     DuplicateReview.entry_a_id == a_id,
@@ -84,7 +79,6 @@ async def check_and_flag_duplicates(
             if existing_review.scalars().first() is not None:
                 continue
 
-            # Create new review record
             review = DuplicateReview(
                 entry_a_id=a_id,
                 entry_b_id=b_id,

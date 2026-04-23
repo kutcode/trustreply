@@ -134,7 +134,6 @@ async def list_qa_pairs(
     if category:
         query = query.where(QAPair.category == category)
 
-    # Get total count
     count_query = select(func.count()).select_from(query.subquery())
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
@@ -201,8 +200,8 @@ async def create_qa_pair(
     """Create a new Q&A pair, or update the existing one if the same question already exists.
 
     Duplicate detection is two-tier:
-      1. Exact text match (case-insensitive) — always merges.
-      2. Semantic similarity above threshold — merges into the existing entry
+      1. Exact text match (case-insensitive) - always merges.
+      2. Semantic similarity above threshold - merges into the existing entry
          and keeps the better-worded question. This prevents "What is your
          company name?" and "Please provide your company's legal name" from
          creating separate entries.
@@ -304,7 +303,6 @@ async def detect_duplicates(
     if len(entries) < 2:
         return DuplicateDetectionResponse(clusters=[], total_duplicates=0, total_entries_scanned=len(entries))
 
-    # Build embedding matrix
     embeddings = np.array([bytes_to_embedding(e.embedding) for e in entries])
 
     # Cosine similarity matrix (embeddings are already normalized)
@@ -350,7 +348,6 @@ async def detect_duplicates(
         ))
         total_duplicates += len(indices)
 
-    # Sort by cluster size descending, cap at 100
     clusters.sort(key=lambda c: len(c.entries), reverse=True)
     clusters = clusters[:100]
 
@@ -442,7 +439,6 @@ async def classify_duplicates(
     if len(entries) < 2:
         return DuplicateClassifyResponse(pairs=[], total_classified=0, llm_model=get_llm_model_name())
 
-    # Build embedding matrix and compute similarities
     embeddings_array = np.array([bytes_to_embedding(e.embedding) for e in entries])
     sim_matrix = embeddings_array @ embeddings_array.T
 
@@ -461,7 +457,6 @@ async def classify_duplicates(
         root = _find(parent, i)
         cluster_map[root].append(i)
 
-    # Generate pairwise combinations from clusters
     all_pairs: list[tuple[QAPair, QAPair, float]] = []
     for indices in cluster_map.values():
         if len(indices) < 2:
@@ -478,7 +473,6 @@ async def classify_duplicates(
     if not all_pairs:
         return DuplicateClassifyResponse(pairs=[], total_classified=0, llm_model=get_llm_model_name())
 
-    # Check which pairs already have DuplicateReview records with classification
     new_pairs: list[tuple[QAPair, QAPair, float]] = []
     existing_review_map: dict[tuple[int, int], DuplicateReview] = {}
 
@@ -496,10 +490,8 @@ async def classify_duplicates(
         else:
             new_pairs.append((entry_a, entry_b, similarity))
 
-    # Create DuplicateReview records for new pairs (without classification yet)
     review_records: dict[int, DuplicateReview] = {}  # pair_index -> review
     for idx, (entry_a, entry_b, similarity) in enumerate(new_pairs):
-        # Check if unclassified record exists
         existing_result = await db.execute(
             select(DuplicateReview).where(
                 DuplicateReview.entry_a_id == entry_a.id,
@@ -521,7 +513,6 @@ async def classify_duplicates(
     if review_records:
         await db.flush()  # Get IDs
 
-    # Send unclassified pairs to LLM
     classified_pairs: list[ClassifiedPair] = []
 
     if new_pairs:
@@ -945,7 +936,6 @@ async def import_qa_pairs(
         return {"imported": 0, "errors": errors, "duplicates": 0, "duplicate_questions": [], "total_rows": len(records)}
 
     try:
-        # Load existing KB entries keyed by normalized question for upsert
         existing_result = await db.execute(select(QAPair).where(QAPair.deleted_at.is_(None)))
         existing_entries = existing_result.scalars().all()
         existing_map: dict[str, QAPair] = {}
@@ -953,7 +943,6 @@ async def import_qa_pairs(
             if qa.question:
                 existing_map[qa.question.strip().lower()] = qa
 
-        # Build embedding matrix for semantic dedup against existing KB
         existing_with_embeddings = [qa for qa in existing_entries if qa.embedding is not None]
         stored_embeddings = (
             np.array([bytes_to_embedding(qa.embedding) for qa in existing_with_embeddings])
@@ -973,13 +962,13 @@ async def import_qa_pairs(
             seen_in_import.add(normalized_q)
 
             if normalized_q in existing_map:
-                # Exact text match — update existing
+                # Exact text match - update existing
                 updated_records.append((question, answer, category, existing_map[normalized_q]))
             else:
                 new_records.append((question, answer, category))
 
         # Batch compute embeddings for ALL unique questions (new + updated) in one call.
-        # Use a dict to look up embeddings by question text later — avoids fragile index math.
+        # Use a dict to look up embeddings by question text later - avoids fragile index math.
         all_unique_questions = [q for q, a, c in new_records] + [q for q, a, c, _ in updated_records]
         embedding_map: dict[str, np.ndarray] = {}
         if all_unique_questions:

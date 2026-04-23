@@ -639,7 +639,6 @@ async def _summarize_document_context(
         ]
         result = await _call_chat_json(messages, runtime_config, temperature=0.0, token_usage=token_usage)
 
-        # Build compact summary string from structured result
         summary_parts: list[str] = ["=== DOCUMENT SUMMARY ==="]
         for key, value in result.items():
             if not value:
@@ -831,7 +830,7 @@ async def run_contextual_fill_agent(
     for idx, item in enumerate(items):
         norm_q = (item.question_text or "").strip().lower()
         if norm_q in seen_questions:
-            # This is a duplicate — will be filled from canonical answer later
+            # This is a duplicate - will be filled from canonical answer later
             duplicate_map[idx] = seen_questions[norm_q]
         else:
             seen_questions[norm_q] = idx
@@ -846,7 +845,7 @@ async def run_contextual_fill_agent(
             trace,
             "agent",
             "running",
-            f"Deduplicated {len(duplicate_map)} repeated question(s) — will process {len(work_items)} unique question(s).",
+            f"Deduplicated {len(duplicate_map)} repeated question(s) - will process {len(work_items)} unique question(s).",
         )
 
     for work_idx, work_item in enumerate(work_items):
@@ -912,7 +911,7 @@ async def run_contextual_fill_agent(
         top_sim = candidates[0]["similarity"] if candidates else 0.0
 
         if candidates and top_sim >= kb_direct_threshold:
-            # High-confidence KB match — use directly, skip LLM
+            # High-confidence KB match - use directly, skip LLM
             item_index = work_item["index"]
             kb_answer = candidates[0]["answer"]
             items[item_index].answer_text = kb_answer
@@ -951,7 +950,7 @@ async def run_contextual_fill_agent(
     if not llm_work_items:
         append_trace(
             trace, "fill", "completed",
-            f"All {kb_routed_count} question(s) resolved via KB direct match — LLM skipped entirely.",
+            f"All {kb_routed_count} question(s) resolved via KB direct match - LLM skipped entirely.",
         )
         return {
             "items": items,
@@ -972,7 +971,7 @@ async def run_contextual_fill_agent(
     use_single_stage = settings.agent_single_stage
 
     async def _process_chunk(chunk_idx: int, chunk: list[dict[str, Any]], prior_answers_snapshot: list[dict[str, str]]) -> list[dict[str, Any]]:
-        """Process a single LLM chunk — designed to run concurrently.
+        """Process a single LLM chunk - designed to run concurrently.
 
         Uses a snapshot of prior_answers taken before concurrent execution to
         avoid reading shared mutable state from other chunks.
@@ -992,7 +991,6 @@ async def run_contextual_fill_agent(
 
         if use_single_stage:
             # ── SINGLE-STAGE MODE: one call does research + fill (saves ~50% tokens) ──
-            # Build compact prior_answers summary (just Q+A, no bloat)
             prior_context = ""
             if prior_answers_snapshot:
                 pa_lines = [f"- {pa['question']}: {pa['answer']}" for pa in prior_answers_snapshot[-settings.agent_max_prior_answers:]]
@@ -1048,7 +1046,7 @@ async def run_contextual_fill_agent(
                         "CRITICAL CONTEXT RULES:\n"
                         "1. The DOCUMENT CONTEXT shows the questionnaire being filled. Read headers, titles, and "
                         "surrounding text to understand WHO is being asked (e.g., which company or customer).\n"
-                        "2. The KB CANDIDATES contain answers from YOUR company's knowledge base — these are "
+                        "2. The KB CANDIDATES contain answers from YOUR company's knowledge base - these are "
                         "answers about YOUR company's policies, practices, and information.\n"
                         "3. For GENERAL questions about your company (security policies, compliance, certifications, "
                         "processes), use KB candidates confidently when they match.\n"
@@ -1057,7 +1055,7 @@ async def run_contextual_fill_agent(
                         "for human review unless the answer is clearly derivable from the document context itself.\n"
                         "5. Do NOT invent facts. Do NOT guess contact details, dates, or entity-specific information.\n"
                         "6. When unsure, set needs_human_review=true and confidence below 0.5.\n\n"
-                        "QUESTION TYPE CLASSIFICATION — for each question, classify its type:\n"
+                        "QUESTION TYPE CLASSIFICATION - for each question, classify its type:\n"
                         "- factual_about_company: questions about your company's policies, practices, capabilities\n"
                         "- context_specific: names, dates, contacts, project references that vary per questionnaire\n"
                         "- yes_no_compliance: binary compliance questions (Do you...? Are you...?)\n"
@@ -1246,7 +1244,7 @@ async def run_contextual_fill_agent(
                 trace,
                 "verify",
                 "skipped",
-                f"Skipped verification — average confidence {avg_conf:.2f} exceeds threshold "
+                f"Skipped verification - average confidence {avg_conf:.2f} exceeds threshold "
                 f"{settings.agent_skip_verify_threshold}.",
             )
         else:
@@ -1258,7 +1256,6 @@ async def run_contextual_fill_agent(
                 trace=trace,
                 token_usage=token_usage,
             )
-            # Apply corrections
             for correction in corrections:
                 if not isinstance(correction, dict):
                     continue

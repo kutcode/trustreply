@@ -76,7 +76,6 @@ async def create_template(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    # Load question results
     result = await db.execute(
         select(QuestionResult)
         .where(QuestionResult.job_id == body.job_id)
