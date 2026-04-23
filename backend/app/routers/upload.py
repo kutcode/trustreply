@@ -402,14 +402,239 @@ async def _process_batch_concurrent(
     )
 
 
+def _init_agent_status(
+    job: ProcessingJob,
+    runtime_agent_config: AgentRuntimeConfig | None,
+) -> None:
+    try:
+        job.agent_mode = normalize_agent_mode(job.agent_mode)
+    except ValueError:
+        job.agent_mode = AGENT_MODE_OFF
+
+    if job.agent_mode == AGENT_MODE_OFF:
+        job.agent_status = "disabled"
+        job.agent_summary = "Agent mode disabled."
+        job.agent_trace = []
+    elif not is_agent_available(runtime_agent_config):
+        job.agent_status = "skipped"
+        job.agent_summary = (
+            "Agent requested but API settings are incomplete. "
+            "No semantic fallback was used; unanswered questions will be flagged for review."
+        )
+        job.agent_trace = []
+        _append_job_trace(
+            job, step="agent", status="skipped",
+            message="Agent requested but unavailable due missing configuration; semantic matcher skipped.",
+        )
+    else:
+        job.agent_status = "pending"
+        job.agent_model = runtime_agent_config.model if runtime_agent_config else settings.agent_model
+        job.agent_summary = "Agent queued."
+        job.agent_trace = []
+        _append_job_trace(
+            job, step="agent", status="pending",
+            message=f"Agent mode '{job.agent_mode}' queued for execution.",
+            data={
+                "model": job.agent_model,
+                "provider": runtime_agent_config.provider if runtime_agent_config else settings.agent_provider,
+            },
+        )
+
+
+async def _parse_document_stage(
+    job: ProcessingJob,
+    source_path: Path,
+    db: AsyncSession,
+) -> list[ExtractedItem]:
+    effective_profile = job.parser_profile_name or settings.default_parser_profile
+    effective_hints = settings.parser_hint_overrides or None
+    fingerprint_match = await find_matching_fingerprint(source_path, db)
+    if fingerprint_match and effective_profile == settings.default_parser_profile:
+        effective_profile = fingerprint_match.parser_profile
+        if fingerprint_match.hint_overrides:
+            effective_hints = fingerprint_match.hint_overrides
+        fingerprint_match.last_used_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+        _append_job_trace(
+            job, step="fingerprint", status="matched",
+            message=f"Auto-detected format: profile '{effective_profile}' from learned fingerprint.",
+            data={
+                "fingerprint_id": fingerprint_match.id,
+                "fingerprint_name": fingerprint_match.name,
+                "success_count": fingerprint_match.success_count,
+            },
+        )
+
+    parse_result = parse_document_result(
+        source_path,
+        options=get_parse_options(effective_profile, hint_overrides=effective_hints),
+    )
+    job.total_questions = len(parse_result.items)
+    job.parser_strategy = parse_result.parser_strategy
+    job.parser_profile_name = parse_result.profile_name
+    job.parse_confidence = parse_result.confidence
+    job.parse_stats = parse_result.stats
+    job.fallback_recommended = parse_result.fallback_recommended
+    job.fallback_reason = parse_result.fallback_reason
+    _append_job_trace(
+        job, step="parser", status="completed",
+        message=f"Extracted {len(parse_result.items)} question(s) with parser profile '{parse_result.profile_name}'.",
+        data={"confidence": parse_result.confidence},
+    )
+    await db.commit()
+    return parse_result.items
+
+
+async def _apply_template_prefill(
+    items: list[ExtractedItem],
+    template_id: int,
+    job: ProcessingJob,
+    db: AsyncSession,
+) -> None:
+    from app.models import QuestionnaireTemplate, TemplateAnswer
+    template = await db.get(QuestionnaireTemplate, template_id)
+    if not template:
+        return
+    result = await db.execute(
+        select(TemplateAnswer).where(TemplateAnswer.template_id == template_id)
+    )
+    template_lookup: dict[str, str] = {
+        normalize_question_key(ta.question_text): ta.answer_text
+        for ta in result.scalars().all()
+    }
+    prefilled = 0
+    for item in items:
+        if item.answer_text is not None:
+            continue
+        key = normalize_question_key(item.question_text)
+        if key in template_lookup:
+            item.answer_text = template_lookup[key]
+            item.matched_source = "template"
+            item.confidence = 0.95
+            prefilled += 1
+
+    template.times_used = (template.times_used or 0) + 1
+    template.last_used_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    _append_job_trace(
+        job, step="template", status="completed",
+        message=f"Pre-filled {prefilled} answer(s) from template '{template.name}'.",
+        data={"template_id": template_id, "prefilled": prefilled},
+    )
+    await db.commit()
+
+
+async def _run_agent_stage(
+    items: list[ExtractedItem],
+    job: ProcessingJob,
+    source_path: Path,
+    db: AsyncSession,
+    agent_instructions: str | None,
+    runtime_agent_config: AgentRuntimeConfig | None,
+) -> tuple[list[ExtractedItem], dict[str, Any] | None]:
+    agent_result: dict[str, Any] | None = None
+    try:
+        job.agent_status = "running"
+        _append_job_trace(job, step="agent", status="running", message="Running research + fill agents.")
+        await db.commit()
+
+        agent_result = await run_contextual_fill_agent(
+            file_path=source_path, items=items, db=db,
+            mode=job.agent_mode, instructions=agent_instructions,
+            runtime_config=runtime_agent_config,
+        )
+        items = agent_result.get("items", items)
+
+        existing_trace = list(job.agent_trace or [])
+        for event in agent_result.get("trace", []):
+            if isinstance(event, dict):
+                existing_trace.append(event)
+        job.agent_trace = existing_trace
+        job.agent_status = str(agent_result.get("status") or "completed")
+        job.agent_summary = str(agent_result.get("summary") or "Agent run completed.")
+        job.agent_error = None
+        agent_stats = agent_result.get("stats", {})
+        job.agent_input_tokens = agent_stats.get("input_tokens")
+        job.agent_output_tokens = agent_stats.get("output_tokens")
+        job.agent_llm_calls = agent_stats.get("llm_calls")
+        job.agent_kb_routed = agent_stats.get("kb_routed")
+        await db.commit()
+    except Exception as agent_exc:
+        job.agent_status = "error"
+        job.agent_error = str(agent_exc)
+        if not job.agent_summary:
+            job.agent_summary = "Agent run failed. Unanswered questions were left flagged for review."
+        _append_job_trace(
+            job, step="agent", status="error",
+            message="Agent run failed; no semantic fallback applied in Agent mode.",
+            data={"error": str(agent_exc)},
+        )
+        await db.commit()
+    return items, agent_result
+
+
+def _store_question_results(
+    items: list[ExtractedItem],
+    job: ProcessingJob,
+    job_id: int,
+    agent_result: dict[str, Any] | None,
+    db: AsyncSession,
+) -> None:
+    agent_decisions: dict[str, dict] = {}
+    if agent_result is not None:
+        for dec in agent_result.get("decisions", []):
+            if isinstance(dec, dict) and "id" in dec:
+                agent_decisions[dec["id"]] = dec
+
+    for idx, item in enumerate(items):
+        source = "unmatched"
+        if item.answer_text is not None:
+            if item.matched_source:
+                source = item.matched_source
+            elif job.agent_mode != AGENT_MODE_OFF:
+                source = "agent"
+            else:
+                source = "kb_match"
+
+        decision = agent_decisions.get(f"q_{idx}", {})
+        qr = QuestionResult(
+            job_id=job_id,
+            question_index=idx,
+            question_text=item.question_text,
+            answer_text=item.answer_text,
+            confidence_score=item.confidence,
+            source=source,
+            kb_pair_id=item.matched_qa_id,
+            location_info=item.location,
+            formatting_info=_serialize_run_format(item.formatting),
+            item_type=item.item_type,
+            reviewed=False,
+            agent_reason=decision.get("reason"),
+            agent_issues=decision.get("issues"),
+        )
+        db.add(qr)
+
+
+def _generate_output_file(
+    source_path: Path,
+    output_path: Path,
+    suffix: str,
+    items: list[ExtractedItem],
+) -> None:
+    if suffix == ".docx":
+        generate_filled_docx(source_path, output_path, items)
+    elif suffix == ".pdf":
+        generate_docx_from_pdf_items(output_path, items)
+    elif suffix == ".csv":
+        generate_filled_csv(source_path, output_path, items)
+    elif suffix in (".xlsx", ".xls"):
+        generate_filled_xlsx(source_path, output_path, items)
+
+
 async def _process_document(
     job_id: int,
     agent_instructions: str | None = None,
     runtime_agent_config: AgentRuntimeConfig | None = None,
     template_id: int | None = None,
 ) -> None:
-    """Background task: parse → match/fill strategy → generate output."""
-
     async with async_session() as db:
         try:
             job = await db.get(ProcessingJob, job_id)
@@ -419,129 +644,16 @@ async def _process_document(
             job.status = "processing"
             job.error_message = None
             job.agent_error = None
-            try:
-                job.agent_mode = normalize_agent_mode(job.agent_mode)
-            except ValueError:
-                job.agent_mode = AGENT_MODE_OFF
-
-            if job.agent_mode == AGENT_MODE_OFF:
-                job.agent_status = "disabled"
-                job.agent_summary = "Agent mode disabled."
-                job.agent_trace = []
-            elif not is_agent_available(runtime_agent_config):
-                job.agent_status = "skipped"
-                job.agent_summary = (
-                    "Agent requested but API settings are incomplete. "
-                    "No semantic fallback was used; unanswered questions will be flagged for review."
-                )
-                job.agent_trace = []
-                _append_job_trace(
-                    job,
-                    step="agent",
-                    status="skipped",
-                    message="Agent requested but unavailable due missing configuration; semantic matcher skipped.",
-                )
-            else:
-                job.agent_status = "pending"
-                if runtime_agent_config:
-                    job.agent_model = runtime_agent_config.model
-                else:
-                    job.agent_model = settings.agent_model
-                job.agent_summary = "Agent queued."
-                job.agent_trace = []
-                _append_job_trace(
-                    job,
-                    step="agent",
-                    status="pending",
-                    message=f"Agent mode '{job.agent_mode}' queued for execution.",
-                    data={
-                        "model": job.agent_model,
-                        "provider": runtime_agent_config.provider if runtime_agent_config else settings.agent_provider,
-                    },
-                )
+            _init_agent_status(job, runtime_agent_config)
             await db.commit()
 
             source_path = settings.upload_dir / job.stored_filename
             suffix = source_path.suffix.lower()
 
-            effective_profile = job.parser_profile_name or settings.default_parser_profile
-            effective_hints = settings.parser_hint_overrides or None
-            fingerprint_match = await find_matching_fingerprint(source_path, db)
-            if fingerprint_match and effective_profile == settings.default_parser_profile:
-                effective_profile = fingerprint_match.parser_profile
-                if fingerprint_match.hint_overrides:
-                    effective_hints = fingerprint_match.hint_overrides
-                fingerprint_match.last_used_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-                _append_job_trace(
-                    job,
-                    step="fingerprint",
-                    status="matched",
-                    message=f"Auto-detected format: profile '{effective_profile}' from learned fingerprint.",
-                    data={
-                        "fingerprint_id": fingerprint_match.id,
-                        "fingerprint_name": fingerprint_match.name,
-                        "success_count": fingerprint_match.success_count,
-                    },
-                )
-
-            parse_result = parse_document_result(
-                source_path,
-                options=get_parse_options(
-                    effective_profile,
-                    hint_overrides=effective_hints,
-                ),
-            )
-            items = parse_result.items
-            job.total_questions = len(items)
-            job.parser_strategy = parse_result.parser_strategy
-            job.parser_profile_name = parse_result.profile_name
-            job.parse_confidence = parse_result.confidence
-            job.parse_stats = parse_result.stats
-            job.fallback_recommended = parse_result.fallback_recommended
-            job.fallback_reason = parse_result.fallback_reason
-            _append_job_trace(
-                job,
-                step="parser",
-                status="completed",
-                message=f"Extracted {len(items)} question(s) with parser profile '{parse_result.profile_name}'.",
-                data={"confidence": parse_result.confidence},
-            )
-            await db.commit()  # Commit fingerprint + parser results together
+            items = await _parse_document_stage(job, source_path, db)
 
             if template_id is not None:
-                from app.models import QuestionnaireTemplate, TemplateAnswer
-                template = await db.get(QuestionnaireTemplate, template_id)
-                if template:
-                    result = await db.execute(
-                        select(TemplateAnswer).where(TemplateAnswer.template_id == template_id)
-                    )
-                    template_answers = result.scalars().all()
-                    template_lookup: dict[str, str] = {}
-                    for ta in template_answers:
-                        key = normalize_question_key(ta.question_text)
-                        template_lookup[key] = ta.answer_text
-
-                    prefilled = 0
-                    for item in items:
-                        if item.answer_text is not None:
-                            continue
-                        key = normalize_question_key(item.question_text)
-                        if key in template_lookup:
-                            item.answer_text = template_lookup[key]
-                            item.matched_source = "template"
-                            item.confidence = 0.95
-                            prefilled += 1
-
-                    template.times_used = (template.times_used or 0) + 1
-                    template.last_used_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-                    _append_job_trace(
-                        job,
-                        step="template",
-                        status="completed",
-                        message=f"Pre-filled {prefilled} answer(s) from template '{template.name}'.",
-                        data={"template_id": template_id, "prefilled": prefilled},
-                    )
-                    await db.commit()
+                await _apply_template_prefill(items, template_id, job, db)
 
             if not items:
                 job.status = "done"
@@ -549,9 +661,8 @@ async def _process_document(
                 job.flagged_questions_count = 0
                 job.completed_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
                 if suffix in {".docx", ".csv"}:
-                    output_name = f"filled_{job.stored_filename}"
                     import shutil
-
+                    output_name = f"filled_{job.stored_filename}"
                     shutil.copy2(str(source_path), str(settings.output_dir / output_name))
                     job.output_filename = output_name
                 if job.agent_mode != AGENT_MODE_OFF and job.agent_status in {"pending", "running"}:
@@ -571,11 +682,8 @@ async def _process_document(
                     candidate_score = flagged_item.similarity_score or -1.0
                     if current is None or candidate_score > current_score:
                         prior_flagged_by_key[key] = flagged_item
-
                 _append_job_trace(
-                    job,
-                    step="matcher",
-                    status="completed",
+                    job, step="matcher", status="completed",
                     message="Semantic matching completed.",
                     data={
                         "matched": sum(1 for item in items if item.answer_text is not None),
@@ -584,62 +692,14 @@ async def _process_document(
                 )
             else:
                 _append_job_trace(
-                    job,
-                    step="matcher",
-                    status="skipped",
+                    job, step="matcher", status="skipped",
                     message="Semantic matcher skipped in Agent mode (AI-first flow).",
                 )
-            # Defer commit — will happen before agent run or at final save
 
             if job.agent_mode != AGENT_MODE_OFF and is_agent_available(runtime_agent_config):
-                try:
-                    job.agent_status = "running"
-                    _append_job_trace(
-                        job,
-                        step="agent",
-                        status="running",
-                        message="Running research + fill agents.",
-                    )
-                    await db.commit()
-
-                    agent_result = await run_contextual_fill_agent(
-                        file_path=source_path,
-                        items=items,
-                        db=db,
-                        mode=job.agent_mode,
-                        instructions=agent_instructions,
-                        runtime_config=runtime_agent_config,
-                    )
-                    items = agent_result.get("items", items)
-
-                    existing_trace = list(job.agent_trace or [])
-                    for event in agent_result.get("trace", []):
-                        if isinstance(event, dict):
-                            existing_trace.append(event)
-                    job.agent_trace = existing_trace
-                    job.agent_status = str(agent_result.get("status") or "completed")
-                    job.agent_summary = str(agent_result.get("summary") or "Agent run completed.")
-                    job.agent_error = None
-                    # Store token usage stats
-                    agent_stats = agent_result.get("stats", {})
-                    job.agent_input_tokens = agent_stats.get("input_tokens")
-                    job.agent_output_tokens = agent_stats.get("output_tokens")
-                    job.agent_llm_calls = agent_stats.get("llm_calls")
-                    job.agent_kb_routed = agent_stats.get("kb_routed")
-                    await db.commit()
-                except Exception as agent_exc:
-                    job.agent_status = "error"
-                    job.agent_error = str(agent_exc)
-                    if not job.agent_summary:
-                        job.agent_summary = "Agent run failed. Unanswered questions were left flagged for review."
-                    _append_job_trace(
-                        job,
-                        step="agent",
-                        status="error",
-                        message="Agent run failed; no semantic fallback applied in Agent mode.",
-                        data={"error": str(agent_exc)},
-                    )
-                    await db.commit()
+                items, agent_result = await _run_agent_stage(
+                    items, job, source_path, db, agent_instructions, runtime_agent_config,
+                )
 
             flagged = _rebuild_flagged_questions(items, job_id, prior_flagged_by_key)
             for flagged_item in flagged:
@@ -648,57 +708,13 @@ async def _process_document(
             job.matched_questions = sum(1 for item in items if item.answer_text is not None)
             job.flagged_questions_count = len(flagged)
 
-            # Build lookup for agent reasoning data (reason + issues per question)
-            agent_decisions_lookup: dict[str, dict] = {}
-            if agent_result is not None:
-                for dec in agent_result.get("decisions", []):
-                    if isinstance(dec, dict) and "id" in dec:
-                        agent_decisions_lookup[dec["id"]] = dec
-
-            # Store per-question results for confidence visibility & review queue
-            for idx, item in enumerate(items):
-                source = "unmatched"
-                if item.answer_text is not None:
-                    if item.matched_source:
-                        source = item.matched_source
-                    elif job.agent_mode != AGENT_MODE_OFF:
-                        source = "agent"
-                    else:
-                        source = "kb_match"
-
-                # Attach agent reasoning if available
-                decision = agent_decisions_lookup.get(f"q_{idx}", {})
-                qr = QuestionResult(
-                    job_id=job_id,
-                    question_index=idx,
-                    question_text=item.question_text,
-                    answer_text=item.answer_text,
-                    confidence_score=item.confidence,
-                    source=source,
-                    kb_pair_id=item.matched_qa_id,
-                    location_info=item.location,
-                    formatting_info=_serialize_run_format(item.formatting),
-                    item_type=item.item_type,
-                    reviewed=False,
-                    agent_reason=decision.get("reason"),
-                    agent_issues=decision.get("issues"),
-                )
-                db.add(qr)
-
+            _store_question_results(items, job, job_id, agent_result, db)
             job.review_status = "pending"
             await db.commit()
 
             output_name, _ = _output_file_spec(job.original_filename, suffix)
             output_path = settings.output_dir / output_name
-
-            if suffix == ".docx":
-                generate_filled_docx(source_path, output_path, items)
-            elif suffix == ".pdf":
-                generate_docx_from_pdf_items(output_path, items)
-            elif suffix == ".csv":
-                generate_filled_csv(source_path, output_path, items)
-            elif suffix in (".xlsx", ".xls"):
-                generate_filled_xlsx(source_path, output_path, items)
+            _generate_output_file(source_path, output_path, suffix, items)
 
             job.output_filename = output_name
             job.status = "done"
@@ -724,9 +740,7 @@ async def _process_document(
                 job.status = "error"
                 job.error_message = str(e)
                 _append_job_trace(
-                    job,
-                    step="job",
-                    status="error",
+                    job, step="job", status="error",
                     message="Processing pipeline failed.",
                     data={"error": str(e)},
                 )
