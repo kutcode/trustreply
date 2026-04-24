@@ -51,7 +51,7 @@ export default function KBEntriesContent() {
         try {
             const data = await listCategories();
             setCategories(data.categories || []);
-        } catch (err) { }
+        } catch (err) { console.warn('Failed to load categories:', err.message); }
     }, []);
 
     const resetCategoryControls = () => {
@@ -72,7 +72,7 @@ export default function KBEntriesContent() {
     useEffect(() => { loadData(); }, [loadData]);
     useEffect(() => { loadCategories(); }, [loadCategories]);
     useEffect(() => {
-        getContradictionCount().then((data) => setContradictionCount(data.count || 0)).catch(() => {});
+        getContradictionCount().then((data) => setContradictionCount(data.count || 0)).catch((err) => console.warn('Failed to load contradiction count:', err.message));
     }, []);
 
     const handleSubmit = async (e) => {

@@ -51,7 +51,7 @@ export default function AgentLearningContent() {
     }, [page, pageSize, autoFilter]);
 
     const loadStats = useCallback(async () => {
-        try { const data = await getCorrectionStats(); setStats(data); } catch (err) { }
+        try { const data = await getCorrectionStats(); setStats(data); } catch (err) { console.warn('Failed to load correction stats:', err.message); }
     }, []);
 
     useEffect(() => { loadData(); }, [loadData]);

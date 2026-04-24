@@ -108,7 +108,7 @@ export default function UploadPage() {
   const refreshJobs = useCallback(() => {
     listJobs()
       .then((data) => setJobs(data.items || []))
-      .catch(() => { });
+      .catch((err) => console.warn('Failed to load jobs:', err.message));
   }, []);
 
   useEffect(() => {
@@ -130,8 +130,8 @@ export default function UploadPage() {
         const defaultProvider = data.agent_provider || 'openai';
         setSelectedProvider(defaultProvider === 'anthropic' ? 'anthropic' : 'openai');
       })
-      .catch(() => { });
-    listTemplates().then((data) => setTemplatesList(data.items || [])).catch(() => { });
+      .catch((err) => console.warn('Failed to load settings:', err.message));
+    listTemplates().then((data) => setTemplatesList(data.items || [])).catch((err) => console.warn('Failed to load templates:', err.message));
   }, []);
 
   // Restore current job/batch from sessionStorage on mount (tab switch persistence)
@@ -198,7 +198,7 @@ export default function UploadPage() {
   }, [currentJob, showAuditTrail, loadAuditLogs]);
 
   const handleTemplatesRefresh = useCallback(() => {
-    listTemplates().then((data) => setTemplatesList(data.items || [])).catch(() => { });
+    listTemplates().then((data) => setTemplatesList(data.items || [])).catch((err) => console.warn('Failed to refresh templates:', err.message));
   }, []);
 
   const pollJob = useCallback(async (jobId) => {

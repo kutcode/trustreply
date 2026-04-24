@@ -67,7 +67,7 @@ function ScanAndMergeTab({ showToast }) {
     const [confirmAction, setConfirmAction] = useState(null);
 
     const loadCategories = useCallback(async () => {
-        try { const data = await listCategories(); setCategories(data.categories || []); } catch (err) { }
+        try { const data = await listCategories(); setCategories(data.categories || []); } catch (err) { console.warn('Failed to load categories:', err.message); }
     }, []);
     useEffect(() => { loadCategories(); }, [loadCategories]);
 

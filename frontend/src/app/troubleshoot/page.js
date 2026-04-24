@@ -68,7 +68,7 @@ export default function TroubleshootPage() {
                 setAnalyzeWithAgent(available);
                 setDefaultParserProfile(data.default_parser_profile || 'default');
             })
-            .catch(() => { });
+            .catch((err) => console.warn('Failed to load settings:', err.message));
     }, []);
 
     useEffect(() => () => {
