@@ -22,11 +22,16 @@ nohup /opt/homebrew/bin/node node_modules/.bin/next dev > /tmp/trustreply-fronte
 disown
 
 echo "Waiting for servers..."
-sleep 5
 
-# Verify
-BACKEND=$(curl -sS -o /dev/null -w "%{http_code}" http://localhost:8000/api/health 2>/dev/null)
-FRONTEND=$(curl -sS -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null)
+# Poll up to 45s — backend cold-start loads sentence-transformers which is slow.
+BACKEND="000"
+FRONTEND="000"
+for _ in $(seq 1 45); do
+    [ "$BACKEND" != "200" ] && BACKEND=$(curl -sS -o /dev/null -w "%{http_code}" http://localhost:8000/api/health 2>/dev/null)
+    [ "$FRONTEND" != "200" ] && FRONTEND=$(curl -sS -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null)
+    [ "$BACKEND" = "200" ] && [ "$FRONTEND" = "200" ] && break
+    sleep 1
+done
 
 if [ "$BACKEND" = "200" ]; then
     echo "✅ Backend:  http://localhost:8000 (healthy)"

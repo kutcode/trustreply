@@ -6,10 +6,13 @@ from sqlalchemy.orm import DeclarativeBase
 
 from app.config import settings
 
-_is_postgres = settings.database_url.startswith("postgresql")
+def _engine_is_postgres(active_engine) -> bool:
+    """Detect at runtime whether the active engine is Postgres."""
+    return active_engine.url.get_backend_name().startswith("postgres")
+
 
 # Configure engine based on database type
-if _is_postgres:
+if settings.database_url.startswith("postgresql"):
     engine = create_async_engine(
         settings.database_url,
         echo=False,
@@ -40,8 +43,13 @@ async def get_db() -> AsyncSession:
 
 
 async def init_db():
-    """Create tables on startup. For Postgres, only creates missing tables."""
-    if _is_postgres:
+    """Create tables on startup. For Postgres, only creates missing tables.
+
+    The backend check is done against the active engine (not module-level
+    settings) so tests that substitute an in-memory SQLite engine take the
+    SQLite branch even when a Postgres URL is present in the environment.
+    """
+    if _engine_is_postgres(engine):
         async with engine.begin() as conn:
             await conn.execute(text("SELECT 1"))
             await _ensure_postgres_duplicate_reviews(conn)

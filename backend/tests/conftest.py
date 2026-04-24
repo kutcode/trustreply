@@ -20,26 +20,35 @@ from app.config import settings
 TEST_DB_URL = "sqlite+aiosqlite://"  # in-memory
 
 
+_SETTINGS_DEFAULTS = {
+    # Agent defaults (LLM disabled during tests unless a test opts in)
+    "agent_enabled": False,
+    "agent_provider": "openai",
+    "agent_api_base": "https://api.openai.com/v1",
+    "agent_api_key": "",
+    "agent_model": "gpt-4.1-nano",
+    "agent_default_mode": "agent",
+    # Per-provider keys are checked by the settings/models endpoint fallback;
+    # clearing them keeps "no API key provided" paths reachable in tests.
+    "agent_openai_api_key": "",
+    "agent_anthropic_api_key": "",
+    # Auth off: tests exercise endpoints directly without Supabase or API keys.
+    # Without this, a local .env populated with auth values turns every request
+    # into a 401 and 41 API-level tests fail on a fresh clone.
+    "supabase_url": "",
+    "supabase_anon_key": "",
+    "supabase_jwt_secret": "",
+    "api_key": "",
+    "allowed_email_domains": [],
+}
+
+
 @pytest.fixture(autouse=True)
 def isolate_runtime_settings():
     """Keep tests deterministic regardless of local .env overrides."""
-
-    original = {
-        "agent_enabled": settings.agent_enabled,
-        "agent_provider": settings.agent_provider,
-        "agent_api_base": settings.agent_api_base,
-        "agent_api_key": settings.agent_api_key,
-        "agent_model": settings.agent_model,
-        "agent_default_mode": settings.agent_default_mode,
-    }
-
-    settings.agent_enabled = False
-    settings.agent_provider = "openai"
-    settings.agent_api_base = "https://api.openai.com/v1"
-    settings.agent_api_key = ""
-    settings.agent_model = "gpt-4.1-nano"
-    settings.agent_default_mode = "agent"
-
+    original = {key: getattr(settings, key) for key in _SETTINGS_DEFAULTS}
+    for key, value in _SETTINGS_DEFAULTS.items():
+        setattr(settings, key, value)
     try:
         yield
     finally:
