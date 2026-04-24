@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import datetime
 import io
+import logging
 from collections import OrderedDict
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
@@ -26,6 +27,8 @@ from app.utils.questions import clean_display_question, normalize_question_key
 from app.routers.qa import _require_category
 from app.services.audit import log_audit
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/flagged", tags=["flagged"])
 
 
@@ -35,8 +38,7 @@ async def _run_duplicate_check_flagged(entry_ids: list[int]) -> None:
         async with async_session() as db:
             await check_and_flag_duplicates(db, entry_ids)
     except Exception:
-        import logging
-        logging.getLogger(__name__).exception("Background duplicate check failed for entry_ids=%s", entry_ids)
+        logger.exception("Background duplicate check failed for entry_ids=%s", entry_ids)
 
 
 async def _load_duplicate_group(

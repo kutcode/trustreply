@@ -3,6 +3,7 @@
 from __future__ import annotations
 import hashlib
 import datetime
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import FormatFingerprint
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_structure(file_path: Path) -> dict[str, Any]:
@@ -92,6 +95,7 @@ async def find_matching_fingerprint(
     try:
         fp_hash, _ = compute_fingerprint(file_path)
     except Exception:
+        logger.warning("Fingerprint lookup skipped; could not hash %s", file_path.name, exc_info=True)
         return None
 
     result = await db.execute(
@@ -113,6 +117,7 @@ async def save_fingerprint(
     try:
         fp_hash, metadata = compute_fingerprint(file_path)
     except Exception:
+        logger.warning("Fingerprint save skipped; could not hash %s", file_path.name, exc_info=True)
         return None
 
     result = await db.execute(

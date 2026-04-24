@@ -5,6 +5,7 @@ import csv
 import datetime
 import io
 import json
+import logging
 from collections import defaultdict
 from itertools import combinations
 
@@ -35,6 +36,8 @@ from app.services.duplicate_classifier import classify_duplicate_pairs, get_llm_
 from app.services.duplicate_flag import check_and_flag_duplicates
 from app.config import settings
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/qa", tags=["qa"])
 
 # Semantic dedup threshold is loaded from settings.semantic_dedup_threshold.
@@ -48,8 +51,7 @@ async def _run_duplicate_check(entry_ids: list[int]) -> None:
         async with async_session() as db:
             await check_and_flag_duplicates(db, entry_ids)
     except Exception:
-        import logging
-        logging.getLogger(__name__).exception("Background duplicate check failed for entry_ids=%s", entry_ids)
+        logger.exception("Background duplicate check failed for entry_ids=%s", entry_ids)
 
 
 def _require_category(category: str | None) -> str:

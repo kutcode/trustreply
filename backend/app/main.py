@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -26,13 +28,36 @@ from app.services.agent import (
 from app.services.parser import get_parser_profiles, get_parser_profile_names
 
 
+def _configure_logging() -> None:
+    """Set up a single root logging config for the whole backend.
+
+    Respects the LOG_LEVEL env var (default INFO) and the LOG_FORMAT env
+    var ("text" or "json"). JSON output is handy in production where logs
+    are ingested by a log shipper.
+    """
+    level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    fmt = "%(asctime)s %(levelname)s %(name)s %(message)s"
+    logging.basicConfig(level=level, format=fmt, force=True)
+
+    # Tame noisy third-party libraries at INFO level.
+    logging.getLogger("httpx").setLevel(max(level, logging.WARNING))
+    logging.getLogger("httpcore").setLevel(max(level, logging.WARNING))
+
+
+_configure_logging()
+logger = logging.getLogger(__name__)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
-    # Startup: create database tables
+    logger.info("TrustReply backend starting up")
     await init_db()
+    logger.info("Database schema ready")
     yield
-    # Shutdown: nothing to clean up
+    logger.info("TrustReply backend shutting down")
 
 
 app = FastAPI(
