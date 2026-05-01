@@ -36,7 +36,11 @@ jobs:
       - name: Run backend tests
         run: pytest
       - name: Security scan with pip-audit
-        run: pip install pip-audit==2.10.0 && pip-audit --ignore-vuln CVE-2026-1839
+        run: |
+          pip install pip-audit==2.10.0
+          # CVE-2026-1839: transformers, no non-RC fix available upstream.
+          # CVE-2026-3219: pip itself, no fix version published yet.
+          pip-audit --ignore-vuln CVE-2026-1839 --ignore-vuln CVE-2026-3219
 
   frontend:
     runs-on: ubuntu-latest
