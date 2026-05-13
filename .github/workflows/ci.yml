@@ -37,10 +37,12 @@ jobs:
         run: pytest
       - name: Security scan with pip-audit
         run: |
+          # Pin pip to a version that fixes its own published CVEs
+          # (CVE-2026-3219, CVE-2026-6357 are both addressed in 26.1+).
+          pip install --upgrade 'pip>=26.1'
           pip install pip-audit==2.10.0
           # CVE-2026-1839: transformers, no non-RC fix available upstream.
-          # CVE-2026-3219: pip itself, no fix version published yet.
-          pip-audit --ignore-vuln CVE-2026-1839 --ignore-vuln CVE-2026-3219
+          pip-audit --ignore-vuln CVE-2026-1839
 
   frontend:
     runs-on: ubuntu-latest
